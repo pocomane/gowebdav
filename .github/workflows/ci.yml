@@ -1,0 +1,51 @@
+name: CI
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get install golang
+
+      - name: Build
+        run: |
+          chmod ugo+x make.sh && ./make.sh
+
+      - name: Store artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: "OUTs" #destination
+          path: | #source
+            ./build/release/*
+
+  release:
+    if: github.event_name == 'push'
+    needs: [build]
+    runs-on: ubuntu-22.04
+
+    steps:
+
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: OUTs #source
+          path: release #destination
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body: Automatic Release (${{ github.event.head_commit.timestamp }})
+          tag_name: release.${{ github.sha }}
+          files: release/*
+
