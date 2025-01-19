@@ -36,6 +36,7 @@ const (
 	ENV_PREFIX      = GDW_ENV_PREFIX + "PREFIX"
 	ENV_SERVE_MODE  = GDW_ENV_PREFIX + "SERVE_MODE"
 	ENV_ZONE_HEADER = GDW_ENV_PREFIX + "ZONE_HEADER"
+	ENV_CLEAN_DEST  = GDW_ENV_PREFIX + "CLEAN_DESTINATION"
 
   MODE_FOLDER = "folder"
   MODE_ZONE   = "zone"
@@ -50,6 +51,8 @@ type app struct {
   verbosity    uint16
   hide_root    bool
   zone_header  string
+  host_string  string
+  clean_dest   bool
 }
 
 type logOpt struct {
@@ -179,13 +182,31 @@ func (t*app) WebDAVHandler(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  // RFC4918 allows to GET over a collection to return anything the implementation
-  // found useful. A common choice is to let it behave like PROPFIND. Also HEAD
-  // on collaction behaves in the same way of PROPFIND.
   switch r.Method {
+  case "COPY":
+    if t.clean_dest {
+      dest := r.Header.Get("Destination")
+      new_dest := dest
+      if new_dest == dest { new_dest = strings.TrimPrefix(dest, "http://") }
+      if new_dest == dest { new_dest = strings.TrimPrefix(dest, "https://") }
+      if new_dest != dest { // if a prefix was found
+        i := strings.Index(new_dest, "/")
+        if i < 0 {
+          new_dest = t.host_string + "/"
+        } else {
+          new_dest = t.host_string + new_dest[i:]
+        }
+        r.Header.Set("Destination", new_dest)
+        t.log(logOpt{level:DEBUG}, "changed destination from", dest, "to", new_dest)
+      }
+    }
+
   case http.MethodHead:
   	w = nothingWriter{w}
     fallthrough
+  // RFC4918 allows to GET over a collection to return anything the implementation
+  // found useful. A common choice is to let it behave like PROPFIND. Also HEAD
+  // on collaction behaves in the same way of PROPFIND.
   case http.MethodGet:
   	file_stat, err := handler.FileSystem.Stat(context.TODO(), r.URL.Path)
   	if err == nil && file_stat.IsDir() {
@@ -271,7 +292,7 @@ func (t*app) ZoneConfig(serve_path string) {
   }
   items, err := os.ReadDir(serve_path)
   if err != nil {
-    t.log(logOpt{level:ERROR}, "can not access folder: ", serve_path)
+    t.log(logOpt{level:ERROR}, "can not access folder: ", serve_path, err)
     return
   }
   for _, item := range items {
@@ -325,6 +346,13 @@ func (t*app) ParseConfig() {
     t.ZoneConfig(serve_path)
   }
 
+  clean_dest := strings.ToLower(getenv(ENV_CLEAN_DEST, "no"))
+  if clean_dest != "no" && clean_dest != "yes" {
+		t.log(logOpt{level: ERROR}, "Wrong value for variable "+ENV_CLEAN_DEST)
+		return
+  }
+  t.clean_dest = (clean_dest == "yes")
+
 	fmt.Printf("Serving mode: [%s]\n", serve_mode)
 	fmt.Printf("Verbosity level: [%d]\n", t.verbosity)
 	fmt.Printf("Serving content of: [%s]\n", serve_path)
@@ -332,6 +360,7 @@ func (t*app) ParseConfig() {
 	fmt.Printf("Serving URL with prefix: [%s]\n", t.root_handler.Prefix)
 	fmt.Printf("Serving content at host: [%s]\n", t.host)
 	fmt.Printf("Trying configured port: [%d]\n", port)
+	fmt.Printf("Clean destination in copy request: [%s]\n", clean_dest)
   if t.zone_handler != nil {
     fmt.Printf("Zone header: [%s]\n", t.zone_header)
     for k := range(t.zone_handler){
@@ -362,8 +391,9 @@ func (t*app) Main() {
 	if part != nil && len(part) == 2 {
 		host, port = part[0], part[1]
 	}
+  t.host_string = "http://"+host+":"+port
 
-	t.log(logOpt{level: INFO}, "Starting WebDAV server at http://"+host+":"+port)
+	t.log(logOpt{level: INFO}, "Starting WebDAV server at", t.host_string)
 	err = t.Run(ln)
 	if err != nil {
 		t.log(logOpt{level: ERROR}, err)
@@ -416,6 +446,10 @@ variables (default values in square brakets).
 
 - `+ENV_ZONE_HEADER+` [Authorization]. This is the name of the header of the http
   requesto to be used as the sub-folder name in the 'zone' mode.
+
+- `+ENV_CLEAN_DEST+` [No]. It forces the COPY requests to ignore the scheme,
+  host, and port parts of the 'Destination' header.  This is useful if there is
+  a reverse proxy that does not properly transform such header.
 
 The 'zone' serving mode is implemented to improve the interoperability with the
 reverse proxies.
