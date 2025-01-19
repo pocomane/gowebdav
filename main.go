@@ -186,6 +186,7 @@ func (t*app) WebDAVHandler(w http.ResponseWriter, r *http.Request) {
   }
 
   switch r.Method {
+  case "MOVE": fallthrough
   case "COPY":
     if t.clean_dest {
       dest := r.Header.Get("Destination")
@@ -448,7 +449,7 @@ variables (default values in square brakets).
 - `+ENV_ZONE_HEADER+` [Authorization]. This is the name of the header of the http
   requesto to be used as the sub-folder name in the 'zone' mode.
 
-- `+ENV_CLEAN_DEST+` [No]. It forces the COPY requests to ignore the
+- `+ENV_CLEAN_DEST+` [No]. It forces the COPY and MOVE requests to ignore the
   scheme, host, and port parts of the 'Destination' header.  This is useful if
   there is a reverse proxy that does not properly transform such header.
 
