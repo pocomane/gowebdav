@@ -47,11 +47,10 @@ type app struct {
   root_handler webdav.Handler
   zone_handler map[string]*webdav.Handler
   host         string
-  port         uint16
+  port         string
   verbosity    uint16
   hide_root    bool
   zone_header  string
-  host_string  string
   clean_dest   bool
 }
 
@@ -137,7 +136,7 @@ func (t*app) logRequest(req *http.Request, err error) {
 func (t*app) Bind() (net.Listener, error) {
   t.root_handler.Logger = func(req *http.Request, err error) { t.logRequest(req, err) }
 
-  addr := fmt.Sprintf("%s:%d", t.host, t.port)
+  addr := fmt.Sprintf("%s:%s", t.host, t.port)
 
   ln, err := net.Listen("tcp", addr)
   if err != nil {
@@ -168,6 +167,10 @@ func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
   return handler
 }
 
+func (t*app) ConnectionString() string {
+  return fmt.Sprintf("http://%s:%s", t.host, t.port)
+}
+
 // writer that write an empty body.
 type nothingWriter struct{ http.ResponseWriter }
 func (w nothingWriter) Write(data []byte) (int, error) { return 0, nil }
@@ -192,9 +195,9 @@ func (t*app) WebDAVHandler(w http.ResponseWriter, r *http.Request) {
       if new_dest != dest { // if a prefix was found
         i := strings.Index(new_dest, "/")
         if i < 0 {
-          new_dest = t.host_string + "/"
+          new_dest = t.ConnectionString() + "/"
         } else {
-          new_dest = t.host_string + new_dest[i:]
+          new_dest = t.ConnectionString() + new_dest[i:]
         }
         r.Header.Set("Destination", new_dest)
         t.log(logOpt{level:DEBUG}, "changed destination from", dest, "to", new_dest)
@@ -324,12 +327,12 @@ func (t*app) ParseConfig() {
 
   t.root_handler.Prefix = getenv(ENV_PREFIX, "")
 
-  port, err := strconv.Atoi(getenv(ENV_PORT, "0"))
+  t.port = getenv(ENV_PORT, "0")
+  _, err = strconv.Atoi(t.port)
   if err != nil {
     t.log(logOpt{level: ERROR}, "Wrong value for variable "+ENV_PORT, err)
     return
   }
-  t.port = uint16(port)
 
   t.zone_header = getenv(ENV_ZONE_HEADER, "Authorization")
 
@@ -359,7 +362,7 @@ func (t*app) ParseConfig() {
   fmt.Printf("Removing prefix from requested URL: [%s]\n", t.root_handler.Prefix)
   fmt.Printf("Serving URL with prefix: [%s]\n", t.root_handler.Prefix)
   fmt.Printf("Serving content at host: [%s]\n", t.host)
-  fmt.Printf("Trying configured port: [%d]\n", port)
+  fmt.Printf("Trying configured port: [%s]\n", t.port)
   fmt.Printf("Clean destination in copy request: [%s]\n", clean_dest)
   if t.zone_handler != nil {
     fmt.Printf("Zone header: [%s]\n", t.zone_header)
@@ -387,13 +390,11 @@ func (t*app) Main() {
 
   addr := ln.Addr().String()
   part := strings.Split(addr, ":")
-  host, port := addr, addr
   if part != nil && len(part) == 2 {
-    host, port = part[0], part[1]
+    t.port = part[1]
   }
-  t.host_string = "http://"+host+":"+port
 
-  t.log(logOpt{level: INFO}, "Starting WebDAV server at", t.host_string)
+  t.log(logOpt{level: INFO}, "Starting WebDAV server at", t.ConnectionString())
   err = t.Run(ln)
   if err != nil {
     t.log(logOpt{level: ERROR}, err)
@@ -447,9 +448,9 @@ variables (default values in square brakets).
 - `+ENV_ZONE_HEADER+` [Authorization]. This is the name of the header of the http
   requesto to be used as the sub-folder name in the 'zone' mode.
 
-- `+ENV_CLEAN_DEST+` [No]. It forces the COPY requests to ignore the scheme,
-  host, and port parts of the 'Destination' header.  This is useful if there is
-  a reverse proxy that does not properly transform such header.
+- `+ENV_CLEAN_DEST+` [No]. It forces the COPY requests to ignore the
+  scheme, host, and port parts of the 'Destination' header.  This is useful if
+  there is a reverse proxy that does not properly transform such header.
 
 The 'zone' serving mode is implemented to improve the interoperability with the
 reverse proxies.
