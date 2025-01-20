@@ -37,6 +37,8 @@ const (
   ENV_SERVE_MODE  = GDW_ENV_PREFIX + "SERVE_MODE"
   ENV_ZONE_HEADER = GDW_ENV_PREFIX + "ZONE_HEADER"
   ENV_CLEAN_DEST  = GDW_ENV_PREFIX + "CLEAN_DESTINATION"
+  ENV_TLS_CERT    = GDW_ENV_PREFIX + "TLS_CERTIFICATE"
+  ENV_TLS_KEY     = GDW_ENV_PREFIX + "TLS_KEY"
 
   MODE_FOLDER = "folder"
   MODE_ZONE   = "zone"
@@ -52,6 +54,8 @@ type app struct {
   hide_root    bool
   zone_header  string
   clean_dest   bool
+  tls_cert     string
+  tls_key      string
 }
 
 type logOpt struct {
@@ -168,7 +172,11 @@ func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
 }
 
 func (t*app) ConnectionString() string {
-  return fmt.Sprintf("http://%s:%s", t.host, t.port)
+  if t.tls_key == "" {
+    return fmt.Sprintf("http://%s:%s", t.host, t.port)
+  } else {
+    return fmt.Sprintf("https://%s:%s", t.host, t.port)
+  }
 }
 
 // writer that write an empty body.
@@ -231,7 +239,13 @@ func (t*app) Run(ln net.Listener) error {
   })
   server := &http.Server{}
 
-  err := server.Serve(ln)
+  var err error
+  if t.tls_key == "" {
+    err = server.Serve(ln)
+  } else {
+    err = server.ServeTLS(ln, t.tls_cert, t.tls_key)
+  }
+
   if err != nil {
     t.log(logOpt{level:ERROR}, err)
   } else {
@@ -310,14 +324,15 @@ func (t*app) ZoneConfig(serve_path string) {
   }
 }
 
-func (t*app) ParseConfig() {
+func (t*app) ParseConfig() error {
+  config_error := fmt.Errorf("%s", "wrong configuration")
 
   t.root_handler.LockSystem = &subLockSystem{webdav.NewMemLS(), ""}
 
   verb, err := strconv.Atoi(getenv(ENV_VERBOSITY, "2"))
   if err != nil {
     t.log(logOpt{level: ERROR}, "Wrong value for variable "+ENV_VERBOSITY, err)
-    return
+    return err
   }
   t.verbosity = uint16(verb)
 
@@ -332,7 +347,7 @@ func (t*app) ParseConfig() {
   _, err = strconv.Atoi(t.port)
   if err != nil {
     t.log(logOpt{level: ERROR}, "Wrong value for variable "+ENV_PORT, err)
-    return
+    return config_error
   }
 
   t.zone_header = getenv(ENV_ZONE_HEADER, "Authorization")
@@ -341,7 +356,7 @@ func (t*app) ParseConfig() {
   switch serve_mode {
   default:
     t.log(logOpt{level: ERROR}, "Wrong value for variable "+ENV_SERVE_MODE)
-    return
+    return config_error
   case MODE_FOLDER: // nothing else to do
   case MODE_ZONE:
     t.ZoneConfig(serve_path)
@@ -353,9 +368,28 @@ func (t*app) ParseConfig() {
   clean_dest := strings.ToLower(getenv(ENV_CLEAN_DEST, "no"))
   if clean_dest != "no" && clean_dest != "yes" {
     t.log(logOpt{level: ERROR}, "Wrong value for variable "+ENV_CLEAN_DEST)
-    return
+    return config_error
   }
   t.clean_dest = (clean_dest == "yes")
+
+  t.tls_cert = strings.ToLower(getenv(ENV_TLS_CERT, ""))
+  t.tls_key = strings.ToLower(getenv(ENV_TLS_KEY, ""))
+  if (t.tls_cert == "" && t.tls_key != "") || (t.tls_cert != "" && t.tls_key == "") {
+    t.log(logOpt{level: ERROR}, "the following variables must be set togheter or be unset both: "+ENV_TLS_CERT+", "+ENV_TLS_KEY)
+    return config_error
+  }
+  f, err := os.Open(t.tls_cert)
+  if err != nil {
+    t.log(logOpt{level:ERROR}, "can not read '"+t.tls_cert+"'")
+    return config_error
+  }
+  f.Close()
+  f, err = os.Open(t.tls_cert)
+  if err != nil {
+    t.log(logOpt{level:ERROR}, "can not read '"+t.tls_cert+"'")
+    return config_error
+  }
+  f.Close()
 
   fmt.Printf("Serving mode: [%s]\n", serve_mode)
   fmt.Printf("Verbosity level: [%d]\n", t.verbosity)
@@ -371,6 +405,8 @@ func (t*app) ParseConfig() {
       fmt.Printf("Serving zone: [%s]\n", k)
     }
   }
+
+  return nil
 }
 
 func (t*app) Main() {
@@ -381,11 +417,15 @@ func (t*app) Main() {
   }
   fmt.Printf("%s - for help run: %s help\n", APP_TAG, os.Args[0])
 
-  t.ParseConfig()
+  err := t.ParseConfig()
+  if err != nil {
+    t.log(logOpt{level:ERROR}, "Server stopped due to previous errors.")
+    return
+  }
 
   ln, err := t.Bind()
   if err != nil || ln == nil {
-    t.log("ERROR", "Server stopped due to previous errors.")
+    t.log(logOpt{level:ERROR}, "Server stopped due to previous errors.")
     return
   }
 
@@ -413,11 +453,12 @@ func print_help() { fmt.Printf("%s", APP_TAG+`
 This is a simple WebDAV server.
 
 Running it in a clean environment, without arguments, will serve the current
-folder, in read and write mode, on localhost and a random port. The chosen
-port, as well as any log, will be print in the standard console output.
+folder, in read and write mode, on localhost and a random port, without
+encryption. The chosen port, as well as any log, will be print in the standard
+console output.
 
-It supports just WebDAV protocol over plain http. No TSL, no authantication, no
-complex configuration.  It is meant to be placed behind a reverse proxy that
+It supports just WebDAV protocol over http or https. No authantication, caching
+or complex configuration.  It is meant to be placed behind a reverse proxy that
 can provide all the advanced features. File access protection should be
 provided at operating system and file system level.
 
@@ -452,6 +493,14 @@ variables (default values in square brakets).
 - `+ENV_CLEAN_DEST+` [No]. It forces the COPY and MOVE requests to ignore the
   scheme, host, and port parts of the 'Destination' header.  This is useful if
   there is a reverse proxy that does not properly transform such header.
+
+- `+ENV_TLS_CERT+` []. Path to the TLS certificate file. It enables serving
+  encrypted https instead of http. A key must be provided with
+  `+ENV_TLS_KEY+`.
+
+- `+ENV_TLS_KEY+` []. Path to the TLS certificate file. It enables serving
+  encrypted https instead of http. A certificate must be provided with
+  `+ENV_TLS_CERT+`.
 
 The 'zone' serving mode is implemented to improve the interoperability with the
 reverse proxies.
