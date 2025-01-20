@@ -10,6 +10,7 @@ import (
   "strings"
   "strconv"
   "path"
+  "encoding/base64"
   "net"
   "net/http"
   "net/http/httputil"
@@ -56,6 +57,7 @@ type app struct {
   clean_dest   bool
   tls_cert     string
   tls_key      string
+  zone_map     map[string]string
 }
 
 type logOpt struct {
@@ -152,7 +154,13 @@ func (t*app) Bind() (net.Listener, error) {
 }
 
 func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
-  zone := r.Header.Get(t.zone_header)
+  zone_request := r.Header.Get(t.zone_header)
+  var zone string
+  if t.zone_map != nil {
+    zone = t.zone_map[zone_request]
+  } else {
+    zone = zone_request
+  }
   var handler *webdav.Handler
   if t.hide_root || t.zone_handler != nil {
     t.log(logOpt{level: DEBUG}, "using zone", "'" + zone + "'")
@@ -187,9 +195,12 @@ func (t*app) WebDAVHandler(w http.ResponseWriter, r *http.Request) {
 
   handler := t.SelectZoneHandler(r)
   if handler == nil {
-    t.log(logOpt{level: DEBUG}, "returning 404 Not Found for", r.URL.Path)
-    w.WriteHeader(http.StatusNotFound)
-    fmt.Fprintf(w, "404 Not Found")
+    t.log(logOpt{level: DEBUG}, "returning 401 Unauthorized", r.URL.Path)
+    if t.zone_handler != nil { // TODO : find a more meaningful condition ?
+      w.Header().Set("WWW-Authenticate", `Basic realm="AUTH-REALM"`)
+    }
+    w.WriteHeader(http.StatusUnauthorized)
+    fmt.Fprintf(w, "401 Unauthorized")
     return
   }
 
@@ -304,14 +315,22 @@ func (t*subLockSystem) Confirm(now time.Time, name0, name1 string, conditions ..
   return t.parent.Confirm(now, name0, name1, conditions...)
 }
 
-func (t*app) ZoneConfig(serve_path string) {
+func (t*app) ZoneConfig(serve_path string) error {
   if t.zone_handler == nil {
     t.zone_handler = map[string]*webdav.Handler{}
   }
   items, err := os.ReadDir(serve_path)
   if err != nil {
     t.log(logOpt{level:ERROR}, "can not access folder: ", serve_path, err)
-    return
+    return err
+  }
+  t.zone_map = map[string]string{}
+  for _, item := range items {
+    if item.IsDir() {
+        name := item.Name()
+        key := "Basic " + base64.StdEncoding.EncodeToString([]byte(name+":"+name))
+        t.zone_map[key] = name
+    }
   }
   for _, item := range items {
       if item.IsDir() {
@@ -322,6 +341,7 @@ func (t*app) ZoneConfig(serve_path string) {
         t.zone_handler[name] = &wh
       }
   }
+  return nil
 }
 
 func (t*app) ParseConfig() error {
@@ -359,10 +379,15 @@ func (t*app) ParseConfig() error {
     return config_error
   case MODE_FOLDER: // nothing else to do
   case MODE_ZONE:
-    t.ZoneConfig(serve_path)
+    err = t.ZoneConfig(serve_path)
     t.hide_root = true
   case MODE_BOTH:
-    t.ZoneConfig(serve_path)
+    err = t.ZoneConfig(serve_path)
+  }
+
+  if err != nil {
+    t.log(logOpt{level: ERROR}, "error during zone configuration", err)
+    return config_error
   }
 
   clean_dest := strings.ToLower(getenv(ENV_CLEAN_DEST, "no"))
@@ -483,11 +508,12 @@ variables (default values in square brakets).
 - `+ENV_SERVE_MODE+` [folder]. In the 'folder' mode a file will be served with
   the path obtained joining the root folder path and the URI in the request.
   The 'zone' will serve separately each sub-folder of the root folder, but on
-  the same port. The sub-server is chosen looking at the 'Authorization' header
-  in the request, that must be equal to the name of one of the sub-folder,
-  oterwise a '404 Not Found' error is returned. In the 'folder+zone' mode the
-  server behave like the 'zone' mode but it fallbacks to 'folder' mode when the
-  'Authorization' header is empty.
+  the same port. In the 'Authorization' header must be passed a username and
+  a password equal to the name of the folder that have to be access. The header
+  must follow the Basic Auth format. If the folder does not exist, or the header
+  does not follow the previous constraints,an 'Unauthorized' error is returned.
+  In the 'folder+zone' mode the server behave like the 'zone' mode but it
+  fallbacks to 'folder' mode when the 'Authorization' header is empty.
 
 - `+ENV_ZONE_HEADER+` [Authorization]. This is the name of the header of the http
   requesto to be used as the sub-folder name in the 'zone' mode.
