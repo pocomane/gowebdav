@@ -378,18 +378,20 @@ func (t*app) ParseConfig() error {
     t.log(logOpt{level: ERROR}, "the following variables must be set togheter or be unset both: "+ENV_TLS_CERT+", "+ENV_TLS_KEY)
     return config_error
   }
-  f, err := os.Open(t.tls_cert)
-  if err != nil {
-    t.log(logOpt{level:ERROR}, "can not read '"+t.tls_cert+"'")
-    return config_error
+  if t.tls_key != "" {
+    f, err := os.Open(t.tls_cert)
+    if err != nil {
+      t.log(logOpt{level:ERROR}, "can not read '"+t.tls_cert+"'")
+      return config_error
+    }
+    f.Close()
+    f, err = os.Open(t.tls_cert)
+    if err != nil {
+      t.log(logOpt{level:ERROR}, "can not read '"+t.tls_cert+"'")
+      return config_error
+    }
+    f.Close()
   }
-  f.Close()
-  f, err = os.Open(t.tls_cert)
-  if err != nil {
-    t.log(logOpt{level:ERROR}, "can not read '"+t.tls_cert+"'")
-    return config_error
-  }
-  f.Close()
 
   fmt.Printf("Serving mode: [%s]\n", serve_mode)
   fmt.Printf("Verbosity level: [%d]\n", t.verbosity)
