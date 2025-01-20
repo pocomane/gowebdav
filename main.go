@@ -35,15 +35,15 @@ const (
   ENV_PORT        = GDW_ENV_PREFIX + "PORT"
   ENV_PATH        = GDW_ENV_PREFIX + "PATH"
   ENV_PREFIX      = GDW_ENV_PREFIX + "PREFIX"
-  ENV_SERVE_MODE  = GDW_ENV_PREFIX + "SERVE_MODE"
-  ENV_ZONE_HEADER = GDW_ENV_PREFIX + "ZONE_HEADER"
   ENV_CLEAN_DEST  = GDW_ENV_PREFIX + "CLEAN_DESTINATION"
   ENV_TLS_CERT    = GDW_ENV_PREFIX + "TLS_CERTIFICATE"
   ENV_TLS_KEY     = GDW_ENV_PREFIX + "TLS_KEY"
+  ENV_ZONE_HEADER = GDW_ENV_PREFIX + "ZONE_HEADER"
+  ENV_SERVE_MODE  = GDW_ENV_PREFIX + "SERVE_MODE"
 
-  MODE_FOLDER = "folder"
-  MODE_ZONE   = "zone"
-  MODE_BOTH   = "folder+zone"
+  MODE_ROOT   = "root"
+  MODE_DIRECT = "direct"
+  MODE_AUTO   = "auto"
 )
 
 type app struct {
@@ -52,7 +52,6 @@ type app struct {
   host         string
   port         string
   verbosity    uint16
-  hide_root    bool
   zone_header  string
   clean_dest   bool
   tls_cert     string
@@ -162,13 +161,12 @@ func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
     zone = zone_request
   }
   var handler *webdav.Handler
-  if t.hide_root || t.zone_handler != nil {
-    t.log(logOpt{level: DEBUG}, "using zone", "'" + zone + "'")
-  }
-  if !t.hide_root && zone == "" {
+  if t.zone_handler == nil && zone == "" {
+    t.log(logOpt{level: DEBUG}, "using root zone")
     handler = &t.root_handler
   }
   if t.zone_handler != nil && zone != "" {
+    t.log(logOpt{level: DEBUG}, "using zone", "'" + zone + "'")
     handler = t.zone_handler[zone]
   }
   if t.shouldLog(logOpt{level: DEBUG}) {
@@ -315,10 +313,22 @@ func (t*subLockSystem) Confirm(now time.Time, name0, name1 string, conditions ..
   return t.parent.Confirm(now, name0, name1, conditions...)
 }
 
-func (t*app) ZoneConfig(serve_path string) error {
-  if t.zone_handler == nil {
-    t.zone_handler = map[string]*webdav.Handler{}
+func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string) error {
+
+  if serve_mode != MODE_ROOT && serve_mode != MODE_DIRECT && serve_mode != MODE_AUTO {
+    t.log(logOpt{level: ERROR}, "wrong value for variable "+ENV_SERVE_MODE)
+    return fmt.Errorf("invalid serving mode")
   }
+
+  t.root_handler.LockSystem = &subLockSystem{webdav.NewMemLS(), ""}
+  t.root_handler.FileSystem = webdav.Dir(path.Clean(serve_path))
+  t.root_handler.Prefix = prefix
+
+  if serve_mode == MODE_ROOT {
+    return nil
+  }
+
+  t.zone_handler = map[string]*webdav.Handler{}
   items, err := os.ReadDir(serve_path)
   if err != nil {
     t.log(logOpt{level:ERROR}, "can not access folder: ", serve_path, err)
@@ -328,26 +338,31 @@ func (t*app) ZoneConfig(serve_path string) error {
   for _, item := range items {
     if item.IsDir() {
         name := item.Name()
-        key := "Basic " + base64.StdEncoding.EncodeToString([]byte(name+":"+name))
+
+        key := name
+        switch serve_mode {
+        case MODE_DIRECT:
+          key = name
+        case MODE_AUTO:
+          key = "Basic " + base64.StdEncoding.EncodeToString([]byte(name+":"+name))
+        }
+
         t.zone_map[key] = name
     }
   }
-  for _, item := range items {
-      if item.IsDir() {
-        name := item.Name()
-        wh := t.root_handler // clone
-        wh.LockSystem = &subLockSystem{t.root_handler.LockSystem, name}
-        wh.FileSystem = webdav.Dir(path.Join(serve_path, name))
-        t.zone_handler[name] = &wh
-      }
+  for _, name := range t.zone_map {
+    if t.zone_handler[name] == nil {
+      wh := t.root_handler // clone
+      wh.LockSystem = &subLockSystem{t.root_handler.LockSystem, name}
+      wh.FileSystem = webdav.Dir(path.Join(serve_path, name))
+      t.zone_handler[name] = &wh
+    }
   }
   return nil
 }
 
 func (t*app) ParseConfig() error {
   config_error := fmt.Errorf("%s", "wrong configuration")
-
-  t.root_handler.LockSystem = &subLockSystem{webdav.NewMemLS(), ""}
 
   verb, err := strconv.Atoi(getenv(ENV_VERBOSITY, "2"))
   if err != nil {
@@ -358,11 +373,6 @@ func (t*app) ParseConfig() error {
 
   t.host = getenv(ENV_HOST, "127.0.0.1")
 
-  serve_path := getenv(ENV_PATH, "./")
-  t.root_handler.FileSystem = webdav.Dir(path.Clean(serve_path))
-
-  t.root_handler.Prefix = getenv(ENV_PREFIX, "")
-
   t.port = getenv(ENV_PORT, "0")
   _, err = strconv.Atoi(t.port)
   if err != nil {
@@ -372,19 +382,10 @@ func (t*app) ParseConfig() error {
 
   t.zone_header = getenv(ENV_ZONE_HEADER, "Authorization")
 
-  serve_mode := getenv(ENV_SERVE_MODE, MODE_FOLDER)
-  switch serve_mode {
-  default:
-    t.log(logOpt{level: ERROR}, "Wrong value for variable "+ENV_SERVE_MODE)
-    return config_error
-  case MODE_FOLDER: // nothing else to do
-  case MODE_ZONE:
-    err = t.ZoneConfig(serve_path)
-    t.hide_root = true
-  case MODE_BOTH:
-    err = t.ZoneConfig(serve_path)
-  }
-
+  serve_path := getenv(ENV_PATH, "./")
+  prefix := getenv(ENV_PREFIX, "")
+  serve_mode := getenv(ENV_SERVE_MODE, MODE_ROOT)
+  err = t.ZoneConfig(serve_path, prefix, serve_mode)
   if err != nil {
     t.log(logOpt{level: ERROR}, "error during zone configuration", err)
     return config_error
@@ -505,19 +506,6 @@ variables (default values in square brakets).
 - `+ENV_PREFIX+` []. The prefix of the requested URL to be deleted before
   handling the request.
 
-- `+ENV_SERVE_MODE+` [folder]. In the 'folder' mode a file will be served with
-  the path obtained joining the root folder path and the URI in the request.
-  The 'zone' will serve separately each sub-folder of the root folder, but on
-  the same port. In the 'Authorization' header must be passed a username and
-  a password equal to the name of the folder that have to be access. The header
-  must follow the Basic Auth format. If the folder does not exist, or the header
-  does not follow the previous constraints,an 'Unauthorized' error is returned.
-  In the 'folder+zone' mode the server behave like the 'zone' mode but it
-  fallbacks to 'folder' mode when the 'Authorization' header is empty.
-
-- `+ENV_ZONE_HEADER+` [Authorization]. This is the name of the header of the http
-  requesto to be used as the sub-folder name in the 'zone' mode.
-
 - `+ENV_CLEAN_DEST+` [No]. It forces the COPY and MOVE requests to ignore the
   scheme, host, and port parts of the 'Destination' header.  This is useful if
   there is a reverse proxy that does not properly transform such header.
@@ -530,8 +518,19 @@ variables (default values in square brakets).
   encrypted https instead of http. A certificate must be provided with
   `+ENV_TLS_CERT+`.
 
-The 'zone' serving mode is implemented to improve the interoperability with the
-reverse proxies.
+- `+ENV_ZONE_HEADER+` [Authorization]. This is the name of the header of the http
+  requests to be used as the sub-folder name in the 'zone' mode.
+
+- `+ENV_SERVE_MODE+` [`+MODE_ROOT+`]. In the '`+MODE_ROOT+`' mode a file will
+  be served with the path obtained joining the root folder path and the URI in
+  the request.  The '`+MODE_DIRECT+`' mode  will serve separately each sub-folder
+  of the root folder, but on the same port. The content of the 'Authorization'
+  header must match one of the sub-folder, otherwise an 'Unauthorized' error is
+  returned. The '`+MODE_DIRECT+`' mode can be used to improve the
+  interoperability with the reverse proxies.  The '`+MODE_DIRECT+`' mode is
+  similar to '`+MODE_DIRECT+`', but the 'Authorization' header must contain a
+  username and a password in the Basic Auth format and equal to the name of the
+  folder that have to be access.
 
 `)}
 
