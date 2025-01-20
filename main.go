@@ -317,8 +317,9 @@ func (t*subLockSystem) Confirm(now time.Time, name0, name1 string, conditions ..
 func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string) error {
 
   if serve_mode != MODE_ROOT && serve_mode != MODE_DIRECT && serve_mode != MODE_AUTO && !strings.HasPrefix(serve_mode, MODE_MAP) {
-    t.log(logOpt{level: ERROR}, "wrong value for variable "+ENV_SERVE_MODE)
-    return fmt.Errorf("invalid serving mode")
+    err := fmt.Errorf("wrong value for variable %s", ENV_SERVE_MODE)
+    t.log(logOpt{level: ERROR}, err)
+    return err
   }
 
   t.root_handler.LockSystem = &subLockSystem{webdav.NewMemLS(), ""}
@@ -332,7 +333,8 @@ func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string) err
   t.zone_handler = map[string]*webdav.Handler{}
   items, err := os.ReadDir(serve_path)
   if err != nil {
-    t.log(logOpt{level:ERROR}, "can not access folder: ", serve_path, err)
+    err := fmt.Errorf("can not access folder '%s' - %s", serve_path, err)
+    t.log(logOpt{level:ERROR}, err)
     return err
   }
   explicit_map := map[string]string{}
@@ -341,8 +343,9 @@ func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string) err
     for k := 1; k < len(serve_list); k += 1{ // serve_list[0] is the tag "map"
       serve_record := strings.Split(serve_list[k], ":")
       if len(serve_record) != 2 {
-        t.log(logOpt{level:ERROR}, "invalid zone configuration")
-        return fmt.Errorf("invalid zone configuration")
+        err := fmt.Errorf("invalid zone configuration")
+        t.log(logOpt{level:ERROR}, err)
+        return err
       }
       explicit_map[serve_record[1]] = serve_record[0]
     }
@@ -381,11 +384,10 @@ func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string) err
 }
 
 func (t*app) ParseConfig() error {
-  config_error := fmt.Errorf("%s", "wrong configuration")
-
   verb, err := strconv.Atoi(getenv(ENV_VERBOSITY, "2"))
   if err != nil {
-    t.log(logOpt{level: ERROR}, "Wrong value for variable "+ENV_VERBOSITY, err)
+    err := fmt.Errorf("wrong value for variable '%s' - %s", ENV_VERBOSITY, err)
+    t.log(logOpt{level: ERROR}, err)
     return err
   }
   t.verbosity = uint16(verb)
@@ -395,8 +397,9 @@ func (t*app) ParseConfig() error {
   t.port = getenv(ENV_PORT, "0")
   _, err = strconv.Atoi(t.port)
   if err != nil {
-    t.log(logOpt{level: ERROR}, "Wrong value for variable "+ENV_PORT, err)
-    return config_error
+    err := fmt.Errorf("wrong value for variable '%s' - %s", ENV_PORT, err)
+    t.log(logOpt{level: ERROR}, err)
+    return err
   }
 
   t.zone_header = getenv(ENV_ZONE_HEADER, "Authorization")
@@ -406,34 +409,39 @@ func (t*app) ParseConfig() error {
   serve_mode := getenv(ENV_SERVE_MODE, MODE_ROOT)
   err = t.ZoneConfig(serve_path, prefix, serve_mode)
   if err != nil {
-    t.log(logOpt{level: ERROR}, "error during zone configuration", err)
-    return config_error
+    err := fmt.Errorf("error during zone configuration")
+    t.log(logOpt{level: ERROR}, err)
+    return err
   }
 
   clean_dest := strings.ToLower(getenv(ENV_CLEAN_DEST, "no"))
   if clean_dest != "no" && clean_dest != "yes" {
-    t.log(logOpt{level: ERROR}, "Wrong value for variable "+ENV_CLEAN_DEST)
-    return config_error
+    err := fmt.Errorf("wrong value for variable "+ENV_CLEAN_DEST)
+    t.log(logOpt{level: ERROR}, err)
+    return err
   }
   t.clean_dest = (clean_dest == "yes")
 
   t.tls_cert = strings.ToLower(getenv(ENV_TLS_CERT, ""))
   t.tls_key = strings.ToLower(getenv(ENV_TLS_KEY, ""))
   if (t.tls_cert == "" && t.tls_key != "") || (t.tls_cert != "" && t.tls_key == "") {
-    t.log(logOpt{level: ERROR}, "the following variables must be set togheter or be unset both: "+ENV_TLS_CERT+", "+ENV_TLS_KEY)
-    return config_error
+    err := fmt.Errorf("the '%s' and '%s' variables must be set togheter or be unset both", ENV_TLS_CERT, ENV_TLS_KEY)
+    t.log(logOpt{level: ERROR}, err)
+    return err
   }
   if t.tls_key != "" {
-    f, err := os.Open(t.tls_cert)
+    f, err := os.Open(t.tls_key)
     if err != nil {
-      t.log(logOpt{level:ERROR}, "can not read '"+t.tls_cert+"'")
-      return config_error
+      err := fmt.Errorf("can not read '%s' key file", t.tls_key)
+      t.log(logOpt{level:ERROR}, err)
+      return err
     }
     f.Close()
     f, err = os.Open(t.tls_cert)
     if err != nil {
-      t.log(logOpt{level:ERROR}, "can not read '"+t.tls_cert+"'")
-      return config_error
+      err := fmt.Errorf("can not read '%s' cert file", t.tls_cert)
+      t.log(logOpt{level:ERROR}, err)
+      return err
     }
     f.Close()
   }
