@@ -44,6 +44,7 @@ const (
   MODE_ROOT   = "root"
   MODE_DIRECT = "direct"
   MODE_AUTO   = "auto"
+  MODE_MAP    = "map;"
 )
 
 type app struct {
@@ -166,7 +167,7 @@ func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
     handler = &t.root_handler
   }
   if t.zone_handler != nil && zone != "" {
-    t.log(logOpt{level: DEBUG}, "using zone", "'" + zone + "'")
+    t.log(logOpt{level: DEBUG}, "serving sub-folder", "'" + zone + "'")
     handler = t.zone_handler[zone]
   }
   if t.shouldLog(logOpt{level: DEBUG}) {
@@ -315,7 +316,7 @@ func (t*subLockSystem) Confirm(now time.Time, name0, name1 string, conditions ..
 
 func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string) error {
 
-  if serve_mode != MODE_ROOT && serve_mode != MODE_DIRECT && serve_mode != MODE_AUTO {
+  if serve_mode != MODE_ROOT && serve_mode != MODE_DIRECT && serve_mode != MODE_AUTO && !strings.HasPrefix(serve_mode, MODE_MAP) {
     t.log(logOpt{level: ERROR}, "wrong value for variable "+ENV_SERVE_MODE)
     return fmt.Errorf("invalid serving mode")
   }
@@ -334,6 +335,18 @@ func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string) err
     t.log(logOpt{level:ERROR}, "can not access folder: ", serve_path, err)
     return err
   }
+  explicit_map := map[string]string{}
+  if strings.HasPrefix(serve_mode, MODE_MAP) {
+    serve_list := strings.Split(serve_mode, ";")
+    for k := 1; k < len(serve_list); k += 1{ // serve_list[0] is the tag "map"
+      serve_record := strings.Split(serve_list[k], ":")
+      if len(serve_record) != 2 {
+        t.log(logOpt{level:ERROR}, "invalid zone configuration")
+        return fmt.Errorf("invalid zone configuration")
+      }
+      explicit_map[serve_record[1]] = serve_record[0]
+    }
+  }
   t.zone_map = map[string]string{}
   for _, item := range items {
     if item.IsDir() {
@@ -345,9 +358,15 @@ func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string) err
           key = name
         case MODE_AUTO:
           key = "Basic " + base64.StdEncoding.EncodeToString([]byte(name+":"+name))
+        default:
+          if strings.HasPrefix(serve_mode, MODE_MAP){
+            key = explicit_map[name]
+          }
         }
 
-        t.zone_map[key] = name
+        if key != "" {
+          t.zone_map[key] = name
+        }
     }
   }
   for _, name := range t.zone_map {
@@ -530,7 +549,11 @@ variables (default values in square brakets).
   interoperability with the reverse proxies.  The '`+MODE_DIRECT+`' mode is
   similar to '`+MODE_DIRECT+`', but the 'Authorization' header must contain a
   username and a password in the Basic Auth format and equal to the name of the
-  folder that have to be access.
+  folder that have to be access. Finally, the '`+MODE_MAP+`' let you to directly
+  define which sub-folder to serve for each content of the 'Authorization'
+  header.  The format is '`+MODE_MAP+`content1:folder1;content2:folder2' and so
+  on. It will serve the sub-folder 'folder1' when the 'Authorization' header
+  contains exactly 'content1' and so on.
 
 `)}
 
