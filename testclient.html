@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html><head><script>
+window.addEventListener('load', main, false)
+
+// --------------------------------------------------------------------------------
+// Generic utilities
+
+function join_path(base, part){
+  if (part === ".") {
+    return base
+  }
+  var new_url_path = base
+  if (part === "..") {
+    if (new_url_path.endsWith("/")) {
+      new_url_path = new_url_path.slice(0, -1);
+    }
+    new_url_path = new_url_path.substring(0, new_url_path.lastIndexOf('/'));
+  } else {
+    if (new_url_path.endsWith("/")) {
+      new_url_path = new_url_path + part
+    } else {
+      new_url_path = new_url_path + "/" + part
+    }
+  }
+  if (new_url_path === "") {
+    new_url_path = "/"
+  }
+  return new_url_path
+}
+
+function new_ele(tag){
+  return document.createElement(tag)
+}
+
+function new_div(){
+  return new_ele("div")
+}
+
+function add_class(ele, class_name){
+  ele.className = class_name;
+}
+
+function get_class(ele){
+  return ele.className
+}
+
+function clear_class(ele){
+  var class_list = ele.className
+  ele.className = null
+  return class_list
+}
+
+function append_text(ele, txt){
+  ele.appendChild(document.createTextNode(txt))
+}
+
+function get_text(ele){
+  return ele.innerHTML
+}
+
+function swap_content(ele, other){
+  if (other === null || other === undefined){
+    other = new_div()
+  }
+  var tmp = new_div()
+  while (ele.firstChild){
+    var move = ele.lastChild
+    ele.removeChild(move)
+    tmp.appendChild(move)
+  }
+  while (other.firstChild){
+    var move = other.firstChild
+    other.removeChild(move)
+    ele.appendChild(move)
+  }
+  while (tmp.firstChild){
+    other.appendChild(tmp.lastChild)
+  }
+  return other
+}
+
+function show_dialog(ele, message, allow_cancel, mode, initial_content, callback) {
+  var old_ele_content, submit
+
+  // check the input
+
+  var err = false
+  if (typeof message !== "string") {err = true}
+  if (typeof allow_cancel !== "boolean") {err = true}
+  if (mode !== "info" && mode !== "input" && mode !== "password"){ err = true }
+  if (typeof initial_content !== "string" && callback !== undefined) err = true
+  if (typeof callback !== "function" && callback !== undefined) err = true
+  if (err) { throw new Error("wrong arguments to show_dialog function") }
+
+  // build the dialog apparence
+
+  var pseudo_dialog = new_div()
+  add_class(pseudo_dialog, "pseudo_dialog_prompt")
+
+  var label = new_ele("label")
+  label.textContent = message
+  pseudo_dialog.appendChild(label)
+
+  var input = new_ele("input")
+  input.autofocus=true
+  if (mode === "password"){
+    input.type = "password"
+  }
+  if (mode != "info") {
+    if (initial_content !== null && initial_content !== undefined){
+      input.defaultValue = initial_content
+    }
+    label.appendChild(input)
+  }
+
+  if (allow_cancel){
+    var cancelbutton = new_ele("button")
+    cancelbutton.textContent = "Cancel"
+    cancelbutton.addEventListener("click", function(){ submit(false)}, false)
+    pseudo_dialog.appendChild(cancelbutton)
+  }
+
+  var okbutton = new_ele("button")
+  okbutton.textContent = "Ok"
+  okbutton.addEventListener("click", function(){submit(true)}, false)
+  pseudo_dialog.appendChild(okbutton)
+
+  // set the inputs handlers
+
+  if (mode !== "info") {
+    var doenter = false
+    var doesc = false
+    input.addEventListener("blur", function(e) {
+      doenter = false
+      doesc = false
+    }, false)
+    input.addEventListener("keydown", function(e) {
+      if (e.key === "Enter" && !e.repeat) doenter = true
+      if (e.key === "Escape" && !e.repeat && allow_cancel) doesc = true
+    }, false)
+    input.addEventListener("keyup", function(e) {
+      if (doenter && e.key === "Enter" && !e.repeat) submit(true)
+      if (doesc && e.key === "Escape" && !e.repeat && allow_cancel) submit(false)
+    }, false)
+  }
+
+  submit = function(ok) {
+    swap_content(ele, old_ele_content)
+    var callarg = input.value
+    input.value = "" // keep it in memory for shortest time since it may contain password
+    if (!ok) {
+      callarg = null
+    }
+    if (callback !== null && callback !== undefined) {
+      callback(callarg)
+    }
+    callarg = "" // keep it in memory for shortest time since it may contain password
+  }
+
+  // show in the target element
+
+  old_ele_content = swap_content(ele)
+  ele.appendChild(pseudo_dialog)
+  if (mode === "info") {
+    okbutton.focus();
+  } else {
+    input.focus();
+    if (initial_content !== "" && initial_content != undefined){
+      input.select();
+    }
+  }
+}
+
+function goto_url(user, auth, host, path){
+  var url = "", login = ""
+  if (typeof auth === "string" && auth !== "" && typeof user === "string" && user !== "") {
+    login = user + ":" + auth + "@"
+  }
+  if (typeof host !== "string"){
+    host = window.location.host
+  }
+  if (typeof path !== "string"){
+    path = "/"
+  }
+  window.open(window.location.protocol + "//" + login + join_path(host, path), "_self")
+}
+
+// --------------------------------------------------------------------------------
+// WebDAV utilities
+
+function parse_folder_content(xxx, position) {
+  var folder_content = []
+  for (var k of xxx.children) {
+    var resp = k.children
+    for (var j of resp) {
+      var folder_record = {}
+      for (var l of j.children){
+        if (l.tagName == "D:href") {
+          folder_record.href = l.textContent
+        }
+        if (l.tagName == "D:propstat") {
+          for (var m of l.children){
+            if (m.tagName == "D:prop") {
+              for (var n of m.children){
+                if (n.tagName == "D:displayname") {
+                  folder_record.name = n.textContent
+                }
+                if (n.tagName == "D:getlastmodified") {
+                  folder_record.lastmodified = n.textContent
+                }
+                if (n.tagName == "D:getcontentlength") {
+                  folder_record.length = n.textContent
+                }
+                if (n.tagName == "D:getcontenttype") {
+                  folder_record.type = n.textContent
+                }
+                if (n.tagName == "D:resourcetype") {
+                  for (var o of n.children){
+                    folder_record[o.tagName.replace(/^D:/, 'is_')] = "true"
+                  }
+                }
+              }
+            }
+            if (m.tagName == "D:status") {
+              folder_record.status = m.textContent
+            }
+          }
+        }
+      }
+      if (folder_record.href !== position && folder_record.href !== position + "/"){
+        folder_content.push(folder_record)
+      }
+    }
+  }
+  return folder_content
+}
+
+function create_folder_list_request(position, auth){
+  var xmlHttp = new XMLHttpRequest()
+  xmlHttp.open("PROPFIND", position)
+  xmlHttp.setRequestHeader("DEPTH", "1")
+  if (typeof auth === "string" && auth !== "") {
+    xmlHttp.setRequestHeader("Authorization", auth)
+  }
+  return xmlHttp
+}
+
+function handle_folder_list(xmlHttp, position, callback){ // TODO : remove position
+  xmlHttp.onreadystatechange = function() {
+    if (!callback) {
+      return
+    }
+    if (this.readyState == 4){
+      var result = xmlHttp.responseText
+      if (xmlHttp.status < 200 || xmlHttp.status > 299 ){
+        callback(xmlHttp.status, {})
+      } else {
+        var response = (new DOMParser()).parseFromString(result, "application/xml")
+        var folder_content = parse_folder_content(response, position)
+        callback(xmlHttp.status, folder_content)
+      }
+    }
+  }
+  xmlHttp.send(null)
+}
+
+function create_new_folder_request(position, new_folder_name, auth){
+  var xmlHttp = new XMLHttpRequest()
+  xmlHttp.open("MKCOL", join_path(position, new_folder_name))
+  if (typeof auth === "string" && auth !== "") {
+    xmlHttp.setRequestHeader("Authorization", auth)
+  }
+  return xmlHttp
+}
+
+function handle_feedback(xmlHttp, position, callback){ // TODO : remove position
+  if (typeof position !== "string") {
+    return
+  }
+  xmlHttp.onreadystatechange = function() {
+    if (this.readyState == 4){
+      if (xmlHttp.status < 200 || xmlHttp.status > 299 ){
+        if (callback){
+          callback(xmlHttp.status, {})
+        } else {
+          alert("can not complete the operation")
+        }
+      } else {
+        if (callback){
+          callback(xmlHttp.status)
+        }
+      }
+    }
+  }
+  xmlHttp.send(null)
+}
+
+function handle_new_folder(xmlHttp, position, callback){ // TODO : remove position
+  handle_feedback(xmlHttp, position, callback)
+}
+
+function create_delete_request(position, name, auth){
+  var xmlHttp = new XMLHttpRequest()
+  xmlHttp.open("DELETE", join_path(position, name))
+  if (typeof auth === "string" && auth !== "") {
+    xmlHttp.setRequestHeader("Authorization", auth)
+  }
+  return xmlHttp
+}
+
+function handle_delete(xmlHttp, position, callback){ // TODO : remove position
+  handle_feedback(xmlHttp, position, callback)
+}
+
+function create_move_request(position, name, new_position, new_name, auth){
+  var xmlHttp = new XMLHttpRequest()
+  xmlHttp.open("MOVE", join_path(position, name))
+  xmlHttp.setRequestHeader("Destination", join_path(new_position, new_name))
+  if (typeof auth === "string" && auth !== "") {
+    xmlHttp.setRequestHeader("Authorization", auth)
+  }
+  return xmlHttp
+}
+
+function handle_move(xmlHttp, position, callback){ // TODO : remove position
+  handle_feedback(xmlHttp, position, callback)
+}
+
+function create_copy_request(position, name, new_position, new_name, auth){
+  var xmlHttp = new XMLHttpRequest()
+  xmlHttp.open("COPY", join_path(position, name))
+  xmlHttp.setRequestHeader("Destination", join_path(new_position, new_name))
+  if (typeof auth === "string" && auth !== "") {
+    xmlHttp.setRequestHeader("Authorization", auth)
+  }
+  return xmlHttp
+}
+
+function handle_copy(xmlHttp, position, callback){ // TODO : remove position
+  handle_feedback(xmlHttp, position, callback)
+}
+
+// --------------------------------------------------------------------------------
+// Application
+
+function new_file_item(webdav_browser, file, action_callback){
+  if (!!!file.name || file.name === "") {
+    return null
+  }
+  if (file.name === ".." && (webdav_browser.position === "/" || webdav_browser.position === "")) {
+    return null
+  }
+  var fileitem = new_div()
+  fileitem.className = "webdav_browser_item"
+  if (action_callback !== null){
+    var action_button = new_div()
+    action_button.className = "webdav_browser_button webdav_browser_delete"
+    action_button.append(webdav_browser.action_mode)
+    fileitem.append(action_button)
+    action_button.onclick = function() { action_callback(file) }
+  }
+  var name_button = new_div()
+  if (!!!file.is_collection) {
+    name_button.className = "webdav_browser_file"
+    fileitem.append(name_button)
+    name_button.append(file.name)
+    name_button.onclick = function(){
+      var new_url_path = join_path(webdav_browser.position, file.name)
+      goto_url(webdav_browser.user, webdav_browser.auth, null, new_url_path)
+    }
+  } else {
+    if (file.name !== "..") {
+      fileitem.append(name_button)
+      name_button.className = "webdav_browser_collection"
+      name_button.append(file.name)
+      name_button.onclick = function(){
+        var new_url_path = join_path(webdav_browser.position, file.name)
+        update_file_browser(webdav_browser, new_url_path)
+      }
+    } else {
+      alert("never reached! remove!")
+    }
+  }
+  return fileitem
+}
+
+function change_login(webdav_browser, user, password, position){
+  webdav_browser.user = user
+  webdav_browser.auth = password
+  update_file_browser(webdav_browser, position)
+}
+
+function login_dialog(webdav_browser){
+  show_dialog(webdav_browser,"Username", true, "input", webdav_browser.user, function(user){
+    if (user !== null){
+      show_dialog( webdav_browser,"Password", true, "password", "", function(password){
+        if (password !== null){
+          show_dialog( webdav_browser,"Path", true, "input", webdav_browser.position, function(path){
+            if (path !== null){
+              change_login(webdav_browser, user, password, path)
+            }
+          })
+        }
+      })
+    }
+  })
+}
+
+function new_folder(webdav_browser){
+  show_dialog(webdav_browser, "New Folder name", true, "input", "Unnamed", function(new_folder_name){
+    if(new_folder_name && new_folder_name !== ""){
+      var position = webdav_browser.position
+      var xmlHttp = create_new_folder_request(position, new_folder_name, get_authorization(webdav_browser))
+      handle_new_folder(xmlHttp, position, function(status){
+        if (status < 200 || status > 299 ){
+          alert("can not create folder "+new_folder_name )
+        } else {
+          update_file_browser(position)
+        }
+      })
+    }
+  })
+}
+
+function set_action_mode(webdav_browser, mode){
+  if (webdav_browser.action_mode === mode){
+    webdav_browser.action_mode = "select"
+  } else {
+    webdav_browser.action_mode = mode
+  }
+  update_file_browser(webdav_browser) // TODO : refresh view only, do not remake the list request
+}
+
+function upload_file(webdav_browser){
+  alert("not implemented yet")
+}
+
+function set_destination(webdav_browser, destination){
+  if (typeof destination === "string") {
+    var position = destination
+    if (webdav_browser.destination === destination){
+      destination = ""
+    }
+    update_file_browser(webdav_browser, null, destination)
+  }
+}
+
+function add_file_browser_header(webdav_browser, folder_content){
+
+  // buttons
+  var item = new_div()
+  webdav_browser.append(item)
+  item.className = "webdav_browser_button webdav_browser_login"
+  item.innerHTML = "Login"
+  item.onclick = function() { login_dialog(webdav_browser) }
+  var item = new_div()
+  webdav_browser.append(item)
+  item.className = "webdav_browser_button webdav_browser_new_folder"
+  item.innerHTML = "New Folder"
+  item.onclick = function() { new_folder(webdav_browser) }
+  var item = new_div()
+  webdav_browser.append(item)
+  item.className = "webdav_browser_button webdav_browser_upload"
+  item.innerHTML = "Upload"
+  item.onclick = function() { upload_file(webdav_browser) }
+  var item = new_div()
+  webdav_browser.append(item)
+  item.innerHTML = "Delete"
+  item.className = "webdav_browser_button webdav_browser_delete"
+  item.onclick = function() { set_action_mode(webdav_browser, "delete") }
+  var item = new_div()
+  webdav_browser.append(item)
+  item.innerHTML = "Rename"
+  item.className = "webdav_browser_button webdav_browser_rename"
+  item.onclick = function() { set_action_mode(webdav_browser, "rename") }
+  if (webdav_browser.destination === "") {
+    var item = new_div()
+    webdav_browser.append(item)
+    item.innerHTML = "Set Destination"
+    item.className = "webdav_browser_button webdav_browser_set_destination"
+    item.onclick = function() { set_destination(webdav_browser, webdav_browser.position) }
+  } else {
+    var item = new_div()
+    webdav_browser.append(item)
+    item.className = "webdav_browser_button webdav_browser_move"
+    item.innerHTML = "Move"
+    item.onclick = function() { set_action_mode(webdav_browser, "move") }
+    var item = new_div()
+    webdav_browser.append(item)
+    item.className = "webdav_browser_button webdav_browser_copy"
+    item.innerHTML = "Copy"
+    item.onclick = function() { set_action_mode(webdav_browser, "copy") }
+    var item = new_div()
+    webdav_browser.append(item)
+    item.innerHTML = "Destination: " + webdav_browser.destination
+    item.className = "webdav_browser_button webdav_browser_set_destination"
+    item.onclick = function() { set_destination(webdav_browser, webdav_browser.position) }
+  }
+
+  // location bar
+  var item = new_div()
+  webdav_browser.append(item)
+  item.className = "webdav_browser_location_bar"
+  item.innerHTML = webdav_browser.position
+
+  // parent folder button
+  if  (webdav_browser.position !== "" && webdav_browser.position !== "/"){
+    var item = new_div()
+    webdav_browser.append(item)
+    item.className = "webdav_browser_parent_collection"
+    item.append("..")
+    item.onclick = function(){
+      var new_url_path = join_path(webdav_browser.position, "..")
+      update_file_browser(webdav_browser, new_url_path)
+    }
+  }
+}
+
+function add_file_browser_content(webdav_browser, folder_content){
+  var action_callback = null
+  if (webdav_browser.action_mode !== "select") {
+    action_callback = function(fileinfo){
+      if (webdav_browser.action_mode == "delete") {
+        show_dialog(webdav_browser, "Do your really want to delete '"+fileinfo.name+"'?", true, "info", "", function(confirmed){
+          if (confirmed !== null) {
+            var xmlHttp = create_delete_request(webdav_browser.position, fileinfo.name, get_authorization(webdav_browser))
+            handle_delete(xmlHttp, webdav_browser.position)
+            update_file_browser(webdav_browser)
+          }
+        })
+      } else if (webdav_browser.action_mode == "rename") {
+        show_dialog(webdav_browser, "Rename file", true, "input", fileinfo.name, function(new_name){
+          if (new_name !== null && new_name !== ""){
+            var xmlHttp = create_move_request(webdav_browser.position, fileinfo.name, webdav_browser.position, new_name, get_authorization(webdav_browser))
+            handle_move(xmlHttp, webdav_browser.position)
+            update_file_browser(webdav_browser)
+          }
+        })
+      } else if (webdav_browser.action_mode == "move") {
+        var xmlHttp = create_move_request(webdav_browser.position, fileinfo.name, webdav_browser.destination, fileinfo.name, get_authorization(webdav_browser))
+        handle_move(xmlHttp, webdav_browser.position)
+        update_file_browser(webdav_browser, webdav_browser.position)
+      } else if (webdav_browser.action_mode == "copy") {
+        var xmlHttp = create_copy_request(webdav_browser.position, fileinfo.name, webdav_browser.destination, fileinfo.name, get_authorization(webdav_browser))
+        handle_copy(xmlHttp, webdav_browser.position)
+        update_file_browser(webdav_browser, webdav_browser.position)
+      } else {
+        alert(webdav_browser.action_mode +" not implemented yet")
+      }
+    }
+  }
+  for (var f in folder_content){
+    var file = folder_content[f]
+    if (file.is_collection) {
+      var fileitem = new_file_item(webdav_browser, file, action_callback)
+      if (fileitem !== null){ webdav_browser.append(fileitem) }
+    }
+  }
+  for (var f in folder_content){
+    var file = folder_content[f]
+    if (!!!file.is_collection) {
+      var fileitem = new_file_item(webdav_browser, file, action_callback)
+      if (fileitem !== null){ webdav_browser.append(fileitem) }
+    }
+  }
+}
+
+function add_file_browser_footer(webdav_browser,folder_content){
+}
+
+function reset_webdav_browser(webdav_browser, position, destination){
+  if (!webdav_browser.is_inited){
+    webdav_browser.action_mode = "select"
+    webdav_browser.is_inited = true
+  }
+  while (webdav_browser.firstChild){
+    webdav_browser.removeChild(webdav_browser.firstChild)
+  }
+  if (!!!webdav_browser.position) {
+    webdav_browser.position = "/"
+  }
+  if (!!!webdav_browser.destination) {
+    webdav_browser.destination = ""
+  }
+  if (typeof position === "string"){
+    webdav_browser.position = position
+  }
+  if (typeof destination === "string"){
+    webdav_browser.destination = destination
+  }
+  if (typeof webdav_browser.user !== "string"){
+    webdav_browser.user = ""
+  }
+  if (typeof webdav_browser.auth !== "string"){
+    webdav_browser.auth = ""
+  }
+}
+
+function get_authorization(webdav_browser){
+  if (webdav_browser.auth === ""){
+    return null
+  }
+  return "Basic " + btoa(webdav_browser.user + ":" + webdav_browser.auth)
+}
+
+function update_file_browser(webdav_browser, position, destination) {
+  if (typeof position === "string" && !position.startsWith("/")) {
+    position = "/" + position
+  }
+  var url_to_get = position
+  if (typeof url_to_get !== "string"){
+    url_to_get = webdav_browser.position
+  }
+  var xmlHttp = create_folder_list_request(url_to_get, get_authorization(webdav_browser))
+  handle_folder_list(xmlHttp, url_to_get, function(status, folder_content){
+    reset_webdav_browser(webdav_browser, position, destination)
+    add_file_browser_header(webdav_browser)
+    if (status < 200 || status > 299 ){
+      console.log("ERROR",xmlHttp.status, result)
+//      show_dialog(webdav_browser, "Error "+xmlHttp.status+". Change folder:", false, "input", webdav_browser.position, function(new_folder_name){
+//      })
+    } else {
+      add_file_browser_content(webdav_browser, folder_content)
+    }
+    add_file_browser_footer(webdav_browser)
+  })
+}
+
+function update_all_file_browsers(position, destination) {
+  for (var webdav_browser of document.getElementsByClassName("webdav_browser")) {
+    reset_webdav_browser(webdav_browser, position, destination)
+    update_file_browser(webdav_browser, position, destination)
+  }
+}
+
+function main(){
+  const urlParams = new URLSearchParams(window.location.search);
+  const position = urlParams.get('position');
+  const destination = urlParams.get('destination');
+  var url = window.location.pathname
+  var idx = url.lastIndexOf('/')
+  if (idx > 0) {
+    url = url.substring(0, idx);
+  }
+  if (url.length < 1 || idx < 0) {
+    url = "/"
+  }
+  console.log(">>>>>>", url)
+  if (position === null) {
+    update_all_file_browsers(url, "")
+  } else {
+    update_all_file_browsers(position, destination)
+  }
+}
+
+</script><style>
+
+.webdav_browser_upload { text-decoration: line-through; }
+
+.webdav_browser_button:before { content: " ["; }
+.webdav_browser_button:after { content: "] "; }
+.webdav_browser_location_bar:before { content: "@ current folder is "; }
+.webdav_browser_button { display:inline; }
+.webdav_browser_button:hover { font-weight:bold; }
+.webdav_browser_file { display:inline; }
+.webdav_browser_file:hover { font-weight:bold; }
+.webdav_browser_collection { display:inline; }
+.webdav_browser_collection:hover { font-weight:bold; }
+.webdav_browser_collection:before { content: "> "; }
+.webdav_browser_parent_collection:hover { font-weight:bold; }
+.webdav_browser_parent_collection:before { content: "^ go to parent folder ."; }
+
+</style></head><body><div class="webdav_browser"></div></body></html>

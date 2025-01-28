@@ -28,6 +28,7 @@ jobs:
           name: "OUTs" #destination
           path: | #source
             ./build/release/*
+            ./testclient.html
 
   release:
     if: github.event_name == 'push'

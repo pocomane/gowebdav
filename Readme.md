@@ -23,3 +23,40 @@ on the standard console.
 The configuration is done through environment variables. For more information
 launch the app with the single command line argument 'help'.
 
+# Client
+
+The javascript client is in the `testclient.html` file. With the right
+configuration it can be server from the WebDAV server itself.
+
+# Example configuration
+
+Consider the following configuration:
+
+~~~
+export GWD_HOST="127.0.0.1"
+export GWD_PORT="8123"
+export GWD_PATH="/opt/webdav"
+export GWD_ZONE_MODE="user:anuser:apwd;public:"
+export GWD_CONVERT_TO_BASIC_AUTH="yes"
+export GWD_ZONE_PREFIX="user:/priv;public:/pub"
+./gowebdav
+~~~
+
+It will launch the server at 127.0.0.1, on port 8123, serving
+
+- `/opt/webdav/public` at `http://127.0.0.1:8123/pub`
+- `/opt/webdav/user` at `http://127.0.0.1:8123/priv`
+
+The `pub` path does not require login, to access `priv` instead the username is
+"anuser" and password is "apwd".
+
+If you put the `testclient.html` client under `/opt/webdav/public` you can
+access the UI at `http://127.0.0.1:8123/pub/testclient.html`. It will
+automatically show you the public content or you can use it to insert the user
+credentials.
+
+Note that the server lets anyone to modify the content of the public folder,
+`testclient.html` included. If you want avoid it, you have to force it at
+OS-level, i.e. you have to make the `/opt/webdav/public` folder read-only for
+the user that will run `.\gowebdav`.
+
