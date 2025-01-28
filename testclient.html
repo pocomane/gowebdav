@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html><head><script>
-window.addEventListener('load', main, false)
+
+// This code is released under the MIT license by Mimmo Mane, 2025.
+// THIS SOFTWARE IS PROVIDED “AS IS” WITHOUT WARRANTY OF ANY KIND
 
 // --------------------------------------------------------------------------------
 // Generic utilities
@@ -645,7 +647,6 @@ function main(){
   if (url.length < 1 || idx < 0) {
     url = "/"
   }
-  console.log(">>>>>>", url)
   if (position === null) {
     update_all_file_browsers(url, "")
   } else {
@@ -653,6 +654,7 @@ function main(){
   }
 }
 
+window.addEventListener('load', main, false)
 </script><style>
 
 .webdav_browser_upload { text-decoration: line-through; }

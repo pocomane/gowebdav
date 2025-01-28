@@ -497,7 +497,11 @@ func (t*app) ParseConfig() error {
     if prefix == "" {
       prefix = "/"
     }
-    fmt.Printf("Serving zone in sub-folder [%s] under [%s]\n", v, prefix)
+    public := ""
+    if k == "" {
+      public = " NO AUTHORIZATION NEEDED"
+    }
+    fmt.Printf("Serving zone in sub-folder [%s] under [%s]%s\n", v, prefix, public)
   }
 
   return nil
