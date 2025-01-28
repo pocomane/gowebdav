@@ -34,13 +34,13 @@ const (
   ENV_HOST        = GDW_ENV_PREFIX + "HOST"
   ENV_PORT        = GDW_ENV_PREFIX + "PORT"
   ENV_PATH        = GDW_ENV_PREFIX + "PATH"
-  ENV_PREFIX      = GDW_ENV_PREFIX + "PREFIX"
   ENV_CLEAN_DEST  = GDW_ENV_PREFIX + "CLEAN_DESTINATION"
   ENV_TLS_CERT    = GDW_ENV_PREFIX + "TLS_CERTIFICATE"
   ENV_TLS_KEY     = GDW_ENV_PREFIX + "TLS_KEY"
   ENV_ZONE_HEADER = GDW_ENV_PREFIX + "ZONE_HEADER"
-  ENV_SERVE_MODE  = GDW_ENV_PREFIX + "SERVE_MODE"
+  ENV_SERVE_MODE  = GDW_ENV_PREFIX + "ZONE_MODE"
   ENV_BASIC_AUTH  = GDW_ENV_PREFIX + "CONVERT_TO_BASIC_AUTH"
+  ENV_PREFIX      = GDW_ENV_PREFIX + "ZONE_PREFIX"
 
   MODE_DEFAULT = ".:"
   MODE_AUTO   = "auto"
@@ -159,6 +159,15 @@ func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
     requestDump, _ := httputil.DumpRequest(r, true)
     rd := string(requestDump)
     t.log(logOpt{level: DEBUG}, "got WebDav request: ", rd)
+  }
+  if handler != nil {
+    if !strings.HasPrefix(r.URL.Path, handler.Prefix) {
+      // WebDAV go library returns 404 Not Found for path not beginning with
+      // the selected prefix. We override this behaviour to return 401
+      // Unauthorized. This is needed to mix Public and Private zones on the
+      // same server, using different prefixes.
+      handler = nil
+    }
   }
   return handler
 }
@@ -314,8 +323,23 @@ func (t*subLockSystem) Confirm(now time.Time, name0, name1 string, conditions ..
   return t.parent.Confirm(now, name0, name1, conditions...)
 }
 
-func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string, make_basic_auth bool) error {
+func ParseMapString(serve_mode string) ([][]string, error) {
+  result := [][]string{}
+  serve_list := strings.Split(serve_mode, ";")
+  for k := 0; k < len(serve_list); k += 1{
+    serve_record := strings.SplitN(serve_list[k], ":", 2)
+    if len(serve_record) == 1 && serve_record[0] == "" {
+      continue
+    }
+    if len(serve_record) != 2 {
+      return nil, fmt.Errorf("invalid zone configuration - got %d fields in the map record '%s' instead of 2", len(serve_record), serve_list[k])
+    }
+    result = append(result, serve_record)
+  }
+  return result, nil
+}
 
+func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string, make_basic_auth bool) error {
   logger := func(req *http.Request, err error) { t.logRequest(req, err) }
   base_lock_system := webdav.NewMemLS()
 
@@ -323,18 +347,13 @@ func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string, mak
 
   if serve_mode != MODE_AUTO {
 
-    serve_list := strings.Split(serve_mode, ";")
-    for k := 0; k < len(serve_list); k += 1{
-      serve_record := strings.SplitN(serve_list[k], ":", 2)
-      if len(serve_record) == 1 && serve_record[0] == "" {
-        continue
-      }
-      if len(serve_record) != 2 {
-        err := fmt.Errorf("invalid zone configuration - got %d fields in the zone record '%s' instead of 2", len(serve_record), serve_list[k])
-        t.log(logOpt{level:ERROR}, err)
-        return err
-      }
-      t.zone_map[serve_record[1]] = path.Clean(serve_record[0])
+    zone_list, err := ParseMapString(serve_mode)
+    if err != nil {
+      t.log(logOpt{level:ERROR}, "invalid zone configuration -", err)
+      return err
+    }
+    for _, v := range zone_list {
+      t.zone_map[v[1]] = v[0]
     }
 
   } else {
@@ -369,6 +388,16 @@ func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string, mak
     t.zone_map = ba_zone_map
   }
 
+  prefix_list, err := ParseMapString(prefix)
+  if err != nil {
+    t.log(logOpt{level:ERROR}, "invalid zone prefix configuration -", err)
+    return err
+  }
+  prefix_map := map[string]string{}
+  for _, v := range prefix_list {
+    prefix_map[v[0]] = v[1]
+  }
+
   t.zone_handler = map[string]*webdav.Handler{}
   for k, v := range t.zone_map {
     if t.zone_handler[k] == nil {
@@ -376,7 +405,7 @@ func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string, mak
       wh.Logger = logger
       wh.LockSystem = &subLockSystem{base_lock_system, v}
       wh.FileSystem = webdav.Dir(path.Join(serve_path, v))
-      wh.Prefix = prefix
+      wh.Prefix = prefix_map[v]
       t.zone_handler[k] = &wh
     }
   }
@@ -454,16 +483,21 @@ func (t*app) ParseConfig() error {
   fmt.Printf("You can connect to the WebDAVServer %s\n", t.ConnectionString())
   fmt.Printf("Sub-folder discovery: [%v]\n", serve_mode == MODE_AUTO)
   fmt.Printf("Verbosity level: [%d]\n", t.verbosity)
-  fmt.Printf("Serving content of: [%s]\n", serve_path)
-  fmt.Printf("Removing prefix from requested URL: [%s]\n", prefix)
-  fmt.Printf("Serving URL with prefix: [%s]\n", prefix)
   fmt.Printf("Serving content at host: [%s]\n", t.host)
   fmt.Printf("Trying configured port: [%s]\n", t.port)
   fmt.Printf("Clean destination in copy request: [%v]\n", clean_dest)
   fmt.Printf("Translate zone map to Basic Auth format: [%v]\n", translate_to_basic_auth)
   fmt.Printf("Zone header: [%s]\n", t.zone_header)
-  for _, v := range(t.zone_map){
-    fmt.Printf("Serving zone in sub-folder: [%s]\n", v)
+  for k, v := range(t.zone_map){
+    prefix := ""
+    zh := t.zone_handler[k]
+    if zh != nil {
+      prefix = zh.Prefix
+    }
+    if prefix == "" {
+      prefix = "/"
+    }
+    fmt.Printf("Serving zone in sub-folder [%s] under [%s]\n", v, prefix)
   }
 
   return nil
@@ -535,9 +569,6 @@ server (default values in square brakets).
 - `+ENV_PATH+` [./]. The folder to serve content from. We call this
   'root folder'.
 
-- `+ENV_PREFIX+` []. The prefix of the requested URL to be deleted before
-  handling the request.
-
 - `+ENV_CLEAN_DEST+` [No]. It forces the COPY and MOVE requests to ignore the
   scheme, host, and port parts of the 'Destination' header.  This is useful if
   there is a reverse proxy that does not properly transform such header.
@@ -569,5 +600,12 @@ server (default values in square brakets).
   the original auth field does contain a colon, the part before it will be used
   as username while the part after as password. If it does not contain any
   colon, it will be threated both as username and password.
+
+- `+ENV_PREFIX+` []. This map contains the values for a prefix for each zone,
+  in the format 'folder1:prefix1;folder2:prefix2'.  The prefix will be deleted
+  from the requested URL before handling the request. If the requested URL does
+  not start with the such prefix a 401 Unauthorized error is returned.  Each
+  prefix must begin with '/'.
+
 `)}
 
