@@ -42,8 +42,7 @@ const (
   ENV_SERVE_MODE  = GDW_ENV_PREFIX + "SERVE_MODE"
   ENV_BASIC_AUTH  = GDW_ENV_PREFIX + "CONVERT_TO_BASIC_AUTH"
 
-  MODE_DEFAULT = ":."
-  MODE_DIRECT = "direct"
+  MODE_DEFAULT = ".:"
   MODE_AUTO   = "auto"
 )
 
@@ -326,7 +325,10 @@ func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string, mak
 
     serve_list := strings.Split(serve_mode, ";")
     for k := 0; k < len(serve_list); k += 1{
-      serve_record := strings.Split(serve_list[k], ":")
+      serve_record := strings.SplitN(serve_list[k], ":", 2)
+      if len(serve_record) == 1 && serve_record[0] == "" {
+        continue
+      }
       if len(serve_record) != 2 {
         err := fmt.Errorf("invalid zone configuration - got %d fields in the zone record '%s' instead of 2", len(serve_record), serve_list[k])
         t.log(logOpt{level:ERROR}, err)
@@ -349,17 +351,20 @@ func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string, mak
         t.zone_map[name] = name
       }
     }
-
   }
 
   if make_basic_auth {
     ba_zone_map := map[string]string{}
     for k, v := range t.zone_map {
-      if !strings.Contains(k, ":") {
-        k = k + ":" + k
+      if k == "" {
+        ba_zone_map[k] = v
+      } else {
+        if !strings.Contains(k, ":") {
+          k = k + ":" + k
+        }
+        key := "Basic " + base64.StdEncoding.EncodeToString([]byte(k))
+        ba_zone_map[key] = v
       }
-      key := "Basic " + base64.StdEncoding.EncodeToString([]byte(k))
-      ba_zone_map[key] = v
     }
     t.zone_map = ba_zone_map
   }
@@ -549,21 +554,20 @@ server (default values in square brakets).
   requests to be used as the sub-folder name in the 'zone' mode.
 
 - `+ENV_SERVE_MODE+` [`+MODE_DEFAULT+`].  This is a list of sub-folder of the
-  path in `+ENV_PATH+` to be served.  The format is
-  'folder1:content1;folder2:content2' and so on. It will serve the sub-folder
-  'folder1' when the 'Authorization' header contains exactly 'content1' and so
-  on. The '.' can be used as folder to represent the `+ENV_PATH+` itself. The
-  empty string can be used as content to allow empty or missing 'Authorization'
-  header. Instead of the map you can set the variable to '`+MODE_AUTO+`': it
-  will create a map with 'content' equal to each folder name (useful for
-  reverse proxy integration). This is useful for reverese proxy
-  interoperability, but it can be made more standard setting the
+  path in `+ENV_PATH+` to be served.  The format is 'folder1:auth1;folder2:auth2'
+  and so on. It will serve the sub-folder 'folder1' when the 'Authorization'
+  header contains exactly 'auth1' and so on. The '.' can be used as folder to
+  represent the `+ENV_PATH+` itself. The empty string can be used as auth field
+  to allow empty or missing 'Authorization' header. Instead of the map you can
+  set the variable to '`+MODE_AUTO+`': it will create a map with 'auth' equal to
+  each folder name (useful for reverse proxy integration). This is useful for
+  reverese proxy interoperability, but it can be made more standard setting the
   '`+ENV_BASIC_AUTH+`' variables.
 
 - '`+ENV_BASIC_AUTH+`' [no]. This will transform all the accepted values for
   the 'Authorization' header to something that respect the Basic Auth scheme. If
-  the original content does contain a colon, the part before it will be used as
-  username while the part after as password. If it does not contain any colon,
-  it will be threated both as username and password.
+  the original auth field does contain a colon, the part before it will be used
+  as username while the part after as password. If it does not contain any
+  colon, it will be threated both as username and password.
 `)}
 
