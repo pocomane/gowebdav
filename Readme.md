@@ -56,16 +56,16 @@ automatically show you the public content or you can use it to insert the user
 credentials.
 
 Note that the server lets anyone to modify the content of the public folder,
-`testclient.html` included. If you want avoid it, you have to force it at
-OS-level, i.e. you have to make the `/opt/webdav/public` folder read-only for
-the user that will run `.\gowebdav`.
+`testclient.html` included. If you want avoid it, you have to restrict the
+acces at the OS level, i.e. making the `/opt/webdav/public` folder read-only
+for the user that will run `.\gowebdav`.
 
 If you want to serve over `https` instead, you have just to provide the key and
-certificate file. Supposing that they are in `/opt/webdav/cert.pem` and
+certificate files. Supposing that they are in `/opt/webdav/cert.pem` and
 `/opt/webdav/key.pem`, you just need to add the following variables:
 
 ~~~
-export TLS_CERTIFICATE="/opt/webdav/cert.pem"
-export TLS_KEY="/opt/webdav/key.pem"
+export GWD_TLS_CERTIFICATE="/opt/webdav/cert.pem"
+export GWD_TLS_KEY="/opt/webdav/key.pem"
 ~~~
 
