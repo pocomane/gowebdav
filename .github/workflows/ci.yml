@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v2
       - run: sudo apt-get install golang
       - run: chmod ugo+x make.sh && ./make.sh
-      - run: echo "TAG_NAME=v0.1-rc" >> "$GITHUB_OUTPUT"
+      - run: cat main.go | sed -n 's/.*APP_TAG.*=.*"\([^"]*\)"/TAG_NAME=\1/p' | tail -n 1 >> "$GITHUB_OUTPUT"
         id: version_check
       - uses: softprops/action-gh-release@v1
         with:

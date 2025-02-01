@@ -22,7 +22,7 @@ import (
 )
 
 const (
-  APP_TAG = "GoWebDAV-v0.1"
+  APP_TAG = "GoWebDAV-v0.2-rc"
 
   ERROR   = 0
   WARNING = 1
