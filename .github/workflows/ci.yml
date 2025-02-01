@@ -1,18 +1,16 @@
-name: CI
-run-name: ${{ github.actor }} is building the project
+
+name: Make_All
+
 on: [push, pull_request, workflow_dispatch]
+
 jobs:
-  Make-All:
+  Make_All:
     runs-on: ubuntu-latest
     steps:
-
-      - name: Prepare
       - uses: actions/checkout@v2
       - run: chmod ugo+x ./build.sh
-
-      - name: Make
-      - uses: softprops/action-gh-release@v1
       - run: chmod ugo+x make.sh && ./make.sh
+      - uses: softprops/action-gh-release@v1
         with:
           tag_name: v0.1
           files: build/release/*
