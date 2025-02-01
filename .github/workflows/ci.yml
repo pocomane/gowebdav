@@ -23,7 +23,7 @@ jobs:
           chmod ugo+x make.sh && ./make.sh
 
       - name: Store artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: "OUTs" #destination
           path: | #source
