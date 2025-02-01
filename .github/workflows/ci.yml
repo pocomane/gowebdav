@@ -11,6 +11,6 @@ jobs:
         id: version_check
       - uses: softprops/action-gh-release@v1
         with:
-          tag_name: $((steps.version_check.TAG_NAME))
+          tag_name: ${{steps.version_check.TAG_NAME}}
           files: build/release/*
 
