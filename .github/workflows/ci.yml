@@ -1,14 +1,11 @@
-
 name: Make_All
-
 on: [push, pull_request, workflow_dispatch]
-
 jobs:
   Make_All:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - run: chmod ugo+x ./build.sh
+      - run: sudo apt-get install golang
       - run: chmod ugo+x make.sh && ./make.sh
       - uses: softprops/action-gh-release@v1
         with:
