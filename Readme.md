@@ -36,9 +36,15 @@ Consider the following configuration:
 export GWD_HOST="127.0.0.1"
 export GWD_PORT="8123"
 export GWD_PATH="/opt/webdav"
-export GWD_ZONE_MODE="user:anuser:apwd;public:"
-export GWD_CONVERT_TO_BASIC_AUTH="yes"
-export GWD_ZONE_PREFIX="user:/priv;public:/pub"
+export GWD_ZONE_ENABLE_ZONE="USER PUBLIC"
+export GWD_ZONE_HEAD_USER="anuser:apwd"
+export GWD_ZONE_FOLDER_USER="user"
+export GWD_ZONE_PREFIX_USER="/priv"
+export GWD_ZONE_MODE_USER="basicauth"
+export GWD_ZONE_HEAD_PUBLIC=""
+export GWD_ZONE_FOLDER_PUBLIC="/public"
+export GWD_ZONE_PREFIX_PUBLIC="/pub"
+export GWD_ZONE_MODE_PUBLIC=""
 ./gowebdav
 ~~~
 

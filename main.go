@@ -30,6 +30,7 @@ const (
   DEBUG   = 3
 
   GDW_ENV_PREFIX  = "GWD_"
+
   ENV_VERBOSITY   = GDW_ENV_PREFIX + "VERBOSE"
   ENV_HOST        = GDW_ENV_PREFIX + "HOST"
   ENV_PORT        = GDW_ENV_PREFIX + "PORT"
@@ -38,12 +39,18 @@ const (
   ENV_TLS_CERT    = GDW_ENV_PREFIX + "TLS_CERTIFICATE"
   ENV_TLS_KEY     = GDW_ENV_PREFIX + "TLS_KEY"
   ENV_ZONE_HEADER = GDW_ENV_PREFIX + "ZONE_HEADER"
-  ENV_SERVE_MODE  = GDW_ENV_PREFIX + "ZONE_MODE"
-  ENV_BASIC_AUTH  = GDW_ENV_PREFIX + "CONVERT_TO_BASIC_AUTH"
-  ENV_PREFIX      = GDW_ENV_PREFIX + "ZONE_PREFIX"
 
-  MODE_DEFAULT = ".:"
-  MODE_AUTO   = "auto"
+  ENV_ZONE_LIST   = GDW_ENV_PREFIX + "ZONE_ENABLE_ZONE"
+  ENV_HEAD_ZONE   = GDW_ENV_PREFIX + "ZONE_HEAD_"
+  ENV_FOLDER_ZONE = GDW_ENV_PREFIX + "ZONE_FOLDER_"
+  ENV_PREFIX_ZONE = GDW_ENV_PREFIX + "ZONE_PREFIX_"
+  ENV_MODE_ZONE   = GDW_ENV_PREFIX + "ZONE_MODE_"
+
+  MODE_DEFAULT   = "basicauth"
+  MODE_DIRECT    = "direct"
+  MODE_BASICAUTH = "basicauth"
+
+  AUTH_HEADER_DEFAULT = "Authorization"
 )
 
 type app struct {
@@ -55,7 +62,7 @@ type app struct {
   clean_dest   bool
   tls_cert     string
   tls_key      string
-  zone_map     map[string]string
+  zone_map     map[string]string // needed only for log information
 }
 
 type logOpt struct {
@@ -102,6 +109,7 @@ func (t*app) log(msgs ...interface{}) {
   switch opt.level {
     case ERROR: severity = "ERROR"
     case WARNING: severity = "WARNING"
+    case INFO: severity = "INFO"
     case DEBUG: severity = "DEBUG"
   }
   fmt.Printf("%s [%s %v]", severity, time.Now().Format(time.RFC3339), sourcepos)
@@ -153,15 +161,21 @@ func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
   zone := r.Header.Get(t.zone_header)
   var handler *webdav.Handler
   sub_folder := t.zone_map[zone]
-  t.log(logOpt{level: DEBUG}, "serving sub-folder", "'" + sub_folder + "'")
+  t.log(logOpt{level: DEBUG}, "serving zone in sub-folder", "'" + sub_folder + "'")
   handler = t.zone_handler[zone]
+  rd := ""
   if t.shouldLog(logOpt{level: DEBUG}) {
-    requestDump, _ := httputil.DumpRequest(r, true)
-    rd := string(requestDump)
-    t.log(logOpt{level: DEBUG}, "got WebDav request: ", rd)
+    rdb, _ := httputil.DumpRequest(r, true)
+    rd = string(rdb)
   }
-  if handler != nil {
-    if !strings.HasPrefix(r.URL.Path, handler.Prefix) {
+  t.log(logOpt{level: DEBUG}, "got WebDav request:", rd)
+  if handler == nil {
+    t.log(logOpt{level: DEBUG}, "can not find zone for the request")
+  } else {
+    if strings.HasPrefix(r.URL.Path, handler.Prefix) {
+      t.log(logOpt{level: DEBUG}, "handling path", r.URL.Path, "with prefix", "'" + handler.Prefix + "'")
+    } else {
+      t.log(logOpt{level: DEBUG}, "refusing path", r.URL.Path, "because it does not start with", "'" + handler.Prefix + "'")
       // WebDAV go library returns 404 Not Found for path not beginning with
       // the selected prefix. We override this behaviour to return 401
       // Unauthorized. This is needed to mix Public and Private zones on the
@@ -191,8 +205,8 @@ func (t*app) WebDAVHandler(w http.ResponseWriter, r *http.Request) {
   if handler == nil {
     t.log(logOpt{level: DEBUG}, "returning 401 Unauthorized", r.URL.Path)
 
-    // NOTE: this is done for any values of ENV_BASIC_AUTH since also without
-    // such option the provided zone key may be compatible with the Basic Auth scheme
+    // NOTE: this is done also for zone without MODE_BASICAUTH since also the
+    // provided zone key may be compatible with the Basic Auth scheme
     w.Header().Set("WWW-Authenticate", `Basic realm="AUTH-REALM"`)
 
     w.WriteHeader(http.StatusUnauthorized)
@@ -261,28 +275,6 @@ func (t*app) Run(ln net.Listener) error {
   return err
 }
 
-// Main and Configuration
-
-func getenv(name, def string) string {
-  val := os.Getenv(name)
-  if val == "" {
-    return def
-  }
-  return val
-}
-
-func getenv_bool(name string, def bool) (bool, error) {
-  value := strings.ToLower(getenv(name, ""))
-  if value == "" {
-    return def, nil
-  }
-  switch value {
-  default: return false, fmt.Errorf("wrong value for variable " + ENV_CLEAN_DEST)
-  case "no": case "yes": case "0": case "1": case "false": case "true":
-  }
-  return (value == "yes" || value == "true" || value == "1"), nil
-}
-
 type subLockSystem struct{
   parent webdav.LockSystem
   name string
@@ -323,93 +315,78 @@ func (t*subLockSystem) Confirm(now time.Time, name0, name1 string, conditions ..
   return t.parent.Confirm(now, name0, name1, conditions...)
 }
 
-func ParseMapString(serve_mode string) ([][]string, error) {
-  result := [][]string{}
-  serve_list := strings.Split(serve_mode, ";")
-  for k := 0; k < len(serve_list); k += 1{
-    serve_record := strings.SplitN(serve_list[k], ":", 2)
-    if len(serve_record) == 1 && serve_record[0] == "" {
-      continue
-    }
-    if len(serve_record) != 2 {
-      return nil, fmt.Errorf("invalid zone configuration - got %d fields in the map record '%s' instead of 2", len(serve_record), serve_list[k])
-    }
-    result = append(result, serve_record)
+func (t*app) AddZone(
+  zone_name string,
+  serve_path string,
+  auth_head string,
+  subfolder string,
+  urlprefix string,
+  mode string,
+) error {
+
+  if t.zone_map == nil {
+    t.zone_map = map[string]string{}
   }
-  return result, nil
-}
+  if t.zone_handler == nil {
+    t.zone_handler = map[string]*webdav.Handler{}
+  }
+  var logger func(req *http.Request, err error)
+  var base_lock_system webdav.LockSystem
+  for _, wh := range t.zone_handler {
+    base_lock_system = wh.LockSystem
+    logger = wh.Logger
+    break
+  }
+  if base_lock_system == nil {
+    base_lock_system = webdav.NewMemLS()
+  }
+  if logger == nil {
+    logger = func(req *http.Request, err error) { t.logRequest(req, err) }
+  }
 
-func (t*app) ZoneConfig(serve_path string, prefix string, serve_mode string, make_basic_auth bool) error {
-  logger := func(req *http.Request, err error) { t.logRequest(req, err) }
-  base_lock_system := webdav.NewMemLS()
-
-  t.zone_map = map[string]string{}
-
-  if serve_mode != MODE_AUTO {
-
-    zone_list, err := ParseMapString(serve_mode)
-    if err != nil {
-      t.log(logOpt{level:ERROR}, "invalid zone configuration -", err)
-      return err
-    }
-    for _, v := range zone_list {
-      t.zone_map[v[1]] = v[0]
-    }
-
-  } else {
-
-    items, err := os.ReadDir(serve_path)
-    if err != nil {
-      err := fmt.Errorf("can not access folder '%s' - %s", serve_path, err)
-      t.log(logOpt{level:ERROR}, err)
-      return err
-    }
-    for _, item := range items {
-      if item.IsDir() {
-        name := item.Name()
-        t.zone_map[name] = name
+  if mode == MODE_BASICAUTH {
+    if auth_head != "" {
+      if !strings.Contains(auth_head, ":") {
+        auth_head = auth_head + ":" + auth_head
       }
+      auth_head = "Basic " + base64.StdEncoding.EncodeToString([]byte(auth_head))
     }
   }
 
-  if make_basic_auth {
-    ba_zone_map := map[string]string{}
-    for k, v := range t.zone_map {
-      if k == "" {
-        ba_zone_map[k] = v
-      } else {
-        if !strings.Contains(k, ":") {
-          k = k + ":" + k
-        }
-        key := "Basic " + base64.StdEncoding.EncodeToString([]byte(k))
-        ba_zone_map[key] = v
-      }
-    }
-    t.zone_map = ba_zone_map
-  }
-
-  prefix_list, err := ParseMapString(prefix)
-  if err != nil {
-    t.log(logOpt{level:ERROR}, "invalid zone prefix configuration -", err)
-    return err
-  }
-  prefix_map := map[string]string{}
-  for _, v := range prefix_list {
-    prefix_map[v[0]] = v[1]
-  }
-
-  t.zone_handler = map[string]*webdav.Handler{}
-  for k, v := range t.zone_map {
-    if t.zone_handler[k] == nil {
-      wh := webdav.Handler{}
-      wh.Logger = logger
-      wh.LockSystem = &subLockSystem{base_lock_system, v}
-      wh.FileSystem = webdav.Dir(path.Join(serve_path, v))
-      wh.Prefix = prefix_map[v]
-      t.zone_handler[k] = &wh
-    }
+  t.zone_map[auth_head] = subfolder
+  if t.zone_handler[auth_head] == nil {
+    fullpath := path.Join(serve_path, subfolder)
+    wh := webdav.Handler{}
+    wh.Logger = logger
+    wh.FileSystem = webdav.Dir(fullpath)
+    wh.LockSystem = &subLockSystem{base_lock_system, subfolder}
+    wh.Prefix = urlprefix
+    t.zone_handler[auth_head] = &wh
+    t.log(logOpt{level: DEBUG}, "adding zone at", fullpath, "with prefix", "'"+ urlprefix +"'")
   }
   return nil
+}
+
+// Main and Configuration
+
+func getenv(name, def string) string {
+  val := os.Getenv(name)
+  if val == "" {
+    return def
+  }
+  return val
+}
+
+func getenv_bool(name string, def bool) (bool, error) {
+  value := strings.ToLower(getenv(name, ""))
+  if value == "" {
+    return def, nil
+  }
+  switch value {
+  default: return false, fmt.Errorf("wrong value for variable " + ENV_CLEAN_DEST)
+  case "no": case "yes": case "0": case "1": case "false": case "true":
+  }
+  return (value == "yes" || value == "true" || value == "1"), nil
 }
 
 func (t*app) ParseConfig() error {
@@ -431,22 +408,19 @@ func (t*app) ParseConfig() error {
     return err
   }
 
-  t.zone_header = getenv(ENV_ZONE_HEADER, "Authorization")
-
-  translate_to_basic_auth, err := getenv_bool(ENV_BASIC_AUTH, false)
-  if err != nil {
-    t.log(logOpt{level: ERROR}, err)
-    return err
-  }
+  t.zone_header = getenv(ENV_ZONE_HEADER, AUTH_HEADER_DEFAULT)
 
   serve_path := getenv(ENV_PATH, "./")
-  prefix := getenv(ENV_PREFIX, "")
-  serve_mode := getenv(ENV_SERVE_MODE, MODE_DEFAULT)
-  err = t.ZoneConfig(serve_path, prefix, serve_mode, translate_to_basic_auth)
-  if err != nil {
-    err := fmt.Errorf("error during zone configuration")
-    t.log(logOpt{level: ERROR}, err)
-    return err
+  zone_list := getenv(ENV_ZONE_LIST, "ROOT")
+  for _, zone_name := range strings.Split(zone_list, " ") {
+    t.AddZone(
+      zone_name,
+      serve_path,
+      getenv(ENV_HEAD_ZONE + zone_name, ""),
+      getenv(ENV_FOLDER_ZONE + zone_name, "."),
+      getenv(ENV_PREFIX_ZONE + zone_name, ""),
+      getenv(ENV_MODE_ZONE + zone_name, MODE_BASICAUTH),
+    )
   }
 
   clean_dest, err := getenv_bool(ENV_CLEAN_DEST, false)
@@ -481,12 +455,13 @@ func (t*app) ParseConfig() error {
   }
 
   fmt.Printf("You can connect to the WebDAVServer %s\n", t.ConnectionString())
-  fmt.Printf("Sub-folder discovery: [%v]\n", serve_mode == MODE_AUTO)
+  //fmt.Printf("Sub-folder discovery: [%v]\n", serve_mode == MODE_AUTO)
   fmt.Printf("Verbosity level: [%d]\n", t.verbosity)
   fmt.Printf("Serving content at host: [%s]\n", t.host)
   fmt.Printf("Trying configured port: [%s]\n", t.port)
+  fmt.Printf("Serving content in path: [%s]\n", serve_path)
   fmt.Printf("Clean destination in copy request: [%v]\n", clean_dest)
-  fmt.Printf("Translate zone map to Basic Auth format: [%v]\n", translate_to_basic_auth)
+  // TODO : print if the zone header was translated to basic auth ?
   fmt.Printf("Zone header: [%s]\n", t.zone_header)
   for k, v := range(t.zone_map){
     prefix := ""
@@ -585,31 +560,31 @@ server (default values in square brakets).
   encrypted https instead of http. A certificate must be provided with
   `+ENV_TLS_CERT+`.
 
-- `+ENV_ZONE_HEADER+` [Authorization]. This is the name of the header of the http
+- `+ENV_ZONE_HEADER+` [`+AUTH_HEADER_DEFAULT+`]. This is the name of the header of the http
   requests to be used as the sub-folder name in the 'zone' mode.
 
-- `+ENV_SERVE_MODE+` [`+MODE_DEFAULT+`].  This is a list of sub-folder of the
-  path in `+ENV_PATH+` to be served.  The format is 'folder1:auth1;folder2:auth2'
-  and so on. It will serve the sub-folder 'folder1' when the 'Authorization'
-  header contains exactly 'auth1' and so on. The '.' can be used as folder to
-  represent the `+ENV_PATH+` itself. The empty string can be used as auth field
-  to allow empty or missing 'Authorization' header. Instead of the map you can
-  set the variable to '`+MODE_AUTO+`': it will create a map with 'auth' equal to
-  each folder name (useful for reverse proxy integration). This is useful for
-  reverese proxy interoperability, but it can be made more standard setting the
-  '`+ENV_BASIC_AUTH+`' variables.
+ - `+ENV_ZONE_LIST+` [ROOT] - A whitespace separated list of "Zone" names. A
+  zone define how to serve a folder and are configured through a set of dynamic
+  named variables that ends with one of the zone names.
 
-- '`+ENV_BASIC_AUTH+`' [no]. This will transform all the accepted values for
-  the 'Authorization' header to something that respect the Basic Auth scheme. If
-  the original auth field does contain a colon, the part before it will be used
-  as username while the part after as password. If it does not contain any
-  colon, it will be threated both as username and password.
+ - `+ENV_HEAD_ZONE+`X [] (X must be in `+ENV_ZONE_LIST+`) - The zone will be
+  served when the `+AUTH_HEADER_DEFAULT+` header is equal to the string in this
+  variable.
 
-- `+ENV_PREFIX+` []. This map contains the values for a prefix for each zone,
-  in the format 'folder1:prefix1;folder2:prefix2'.  The prefix will be deleted
-  from the requested URL before handling the request. If the requested URL does
-  not start with the such prefix a 401 Unauthorized error is returned.  Each
-  prefix must begin with '/'.
+ - `+ENV_FOLDER_ZONE+`X [] (X must be in `+ENV_ZONE_LIST+`) - The subfolder
+  of the path in the '`+ENV_PATH+`' variable that contains the files to be
+  served for the zone.
+
+ - `+ENV_PREFIX_ZONE+`X [] (X must be in `+ENV_ZONE_LIST+`) - This specify a
+  prefix of the zone to be deleted from the requested URL before handling the
+  request. If the requested URL does not start with the such prefix a 401
+  Unauthorized error is returned.  Each prefix must begin with '/'.
+
+ - `+ENV_MODE_ZONE+` [`+MODE_DEFAULT+`] (X must be in `+ENV_ZONE_LIST+`) - When the
+  mode is `+MODE_DIRECT+`, the content of `+ENV_HEAD_ZONE+`X must exactly match
+  the `+AUTH_HEADER_DEFAULT+` header of the request. If the mode is `+MODE_BASICAUTH+`
+  the value in `+ENV_HEAD_ZONE+`X  is pre-parsed to make it compatible with
+  the basic auth scheme
 
 `)}
 
