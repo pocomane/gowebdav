@@ -197,7 +197,7 @@ func (t*app) ConnectionString() string {
 // writer that write an empty body.
 type nothingWriter struct{ http.ResponseWriter }
 
-func (w nothingWriter) Write(data []byte) (int, error) { return 0, nil }
+func (t nothingWriter) Write(data []byte) (int, error) { return 0, nil }
 
 func (t*app) WebDAVHandler(w http.ResponseWriter, r *http.Request) {
 
@@ -454,6 +454,14 @@ func (t*app) ParseConfig() error {
     f.Close()
   }
 
+  if t.tls_cert == "" || t.tls_key == "" {
+    fmt.Printf("!!! ATTENTION !!! Server is running without encryption. THIS IS VERY INSECURE.\n")
+    fmt.Printf("Please set the %s and %s variables to enable encryption.\n", ENV_TLS_CERT, ENV_TLS_KEY)
+  } else {
+    fmt.Printf("Encription enabled: true\n")
+    fmt.Printf("Encription key: %s\n", t.tls_key)
+    fmt.Printf("Certificate: %s\n", t.tls_cert)
+  }
   fmt.Printf("You can connect to the WebDAVServer %s\n", t.ConnectionString())
   //fmt.Printf("Sub-folder discovery: [%v]\n", serve_mode == MODE_AUTO)
   fmt.Printf("Verbosity level: [%d]\n", t.verbosity)
@@ -477,6 +485,10 @@ func (t*app) ParseConfig() error {
       public = " NO AUTHORIZATION NEEDED"
     }
     fmt.Printf("Serving zone in sub-folder [%s] under [%s]%s\n", v, prefix, public)
+  }
+  if t.tls_cert == "" || t.tls_key == "" {
+    fmt.Printf("!!! ATTENTION !!! Server is running without encryption. THIS IS VERY INSECURE.\n")
+    fmt.Printf("Please set the %s and %s variables to enable encryption.\n", ENV_TLS_CERT, ENV_TLS_KEY)
   }
 
   return nil
