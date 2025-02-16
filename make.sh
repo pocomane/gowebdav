@@ -13,6 +13,7 @@ build(){
     EXT=".exe"
   fi
   go mod tidy
+  export CGO_ENABLED=0
   go build -ldflags "-s -w" -o "$OUTDIR/$APP_TAG-$GOARCH-${OSTAG}${EXT}"
 }
 
