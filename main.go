@@ -46,6 +46,8 @@ const (
   ENV_PREFIX_ZONE = GDW_ENV_PREFIX + "ZONE_PREFIX_"
   ENV_MODE_ZONE   = GDW_ENV_PREFIX + "ZONE_MODE_"
 
+  ENV_CGI_ZONE = GDW_ENV_PREFIX + "ZONE_CGI_"
+
   MODE_DEFAULT   = "basicauth"
   MODE_DIRECT    = "direct"
   MODE_BASICAUTH = "basicauth"
@@ -53,8 +55,14 @@ const (
   AUTH_HEADER_DEFAULT = "Authorization"
 )
 
+type Zone struct {
+  Webdav    *webdav.Handler
+  Subfolder string
+  Cgi       bool
+}
+
 type app struct {
-  zone_handler map[string]*webdav.Handler
+  zone         map[string]Zone
   host         string
   port         string
   verbosity    uint16
@@ -62,7 +70,6 @@ type app struct {
   clean_dest   bool
   tls_cert     string
   tls_key      string
-  zone_map     map[string]string // needed only for log information
 }
 
 type logOpt struct {
@@ -158,11 +165,11 @@ func (t*app) Bind() (net.Listener, error) {
 }
 
 func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
-  zone := r.Header.Get(t.zone_header)
+  zone_header := r.Header.Get(t.zone_header)
   var handler *webdav.Handler
-  sub_folder := t.zone_map[zone]
+  sub_folder := t.zone[zone_header].Subfolder
   t.log(logOpt{level: DEBUG}, "serving zone in sub-folder", "'" + sub_folder + "'")
-  handler = t.zone_handler[zone]
+  handler = t.zone[zone_header].Webdav
   rd := ""
   if t.shouldLog(logOpt{level: DEBUG}) {
     rdb, _ := httputil.DumpRequest(r, true)
@@ -322,19 +329,17 @@ func (t*app) AddZone(
   subfolder string,
   urlprefix string,
   mode string,
+  cgi bool,
 ) error {
 
-  if t.zone_map == nil {
-    t.zone_map = map[string]string{}
-  }
-  if t.zone_handler == nil {
-    t.zone_handler = map[string]*webdav.Handler{}
+  if t.zone == nil {
+    t.zone = map[string]Zone{}
   }
   var logger func(req *http.Request, err error)
   var base_lock_system webdav.LockSystem
-  for _, wh := range t.zone_handler {
-    base_lock_system = wh.LockSystem
-    logger = wh.Logger
+  for _, zone := range t.zone {
+    base_lock_system = zone.Webdav.LockSystem
+    logger = zone.Webdav.Logger
     break
   }
   if base_lock_system == nil {
@@ -353,15 +358,17 @@ func (t*app) AddZone(
     }
   }
 
-  t.zone_map[auth_head] = subfolder
-  if t.zone_handler[auth_head] == nil {
+  zone := t.zone[auth_head]
+  zone.Subfolder = subfolder
+  zone.Cgi = cgi
+  if zone.Webdav == nil {
     fullpath := path.Join(serve_path, subfolder)
     wh := webdav.Handler{}
     wh.Logger = logger
     wh.FileSystem = webdav.Dir(fullpath)
     wh.LockSystem = &subLockSystem{base_lock_system, subfolder}
     wh.Prefix = urlprefix
-    t.zone_handler[auth_head] = &wh
+    zone.Webdav = &wh
     t.log(logOpt{level: DEBUG}, "adding zone at", fullpath, "with prefix", "'"+ urlprefix +"'")
   }
   return nil
@@ -413,6 +420,11 @@ func (t*app) ParseConfig() error {
   serve_path := getenv(ENV_PATH, "./")
   zone_list := getenv(ENV_ZONE_LIST, "ROOT")
   for _, zone_name := range strings.Split(zone_list, " ") {
+    is_cgi, err := getenv_bool(ENV_CGI_ZONE+zone_name, false)
+    if err != nil {
+      t.log(logOpt{level: ERROR}, err)
+      return err
+    }
     t.AddZone(
       zone_name,
       serve_path,
@@ -420,6 +432,7 @@ func (t*app) ParseConfig() error {
       getenv(ENV_FOLDER_ZONE + zone_name, "."),
       getenv(ENV_PREFIX_ZONE + zone_name, ""),
       getenv(ENV_MODE_ZONE + zone_name, MODE_BASICAUTH),
+      is_cgi,
     )
   }
 
@@ -472,9 +485,9 @@ func (t*app) ParseConfig() error {
   fmt.Printf("Clean destination in copy request: [%v]\n", clean_dest)
   // TODO : print if the zone header was translated to basic auth ?
   fmt.Printf("Zone header: [%s]\n", t.zone_header)
-  for k, v := range(t.zone_map){
+  for k, v := range t.zone {
     prefix := ""
-    zh := t.zone_handler[k]
+    zh := v.Webdav
     if zh != nil {
       prefix = zh.Prefix
     }
@@ -485,7 +498,7 @@ func (t*app) ParseConfig() error {
     if k == "" {
       public = " NO AUTHORIZATION NEEDED"
     }
-    fmt.Printf("Serving zone in sub-folder [%s] under [%s]%s\n", v, prefix, public)
+    fmt.Printf("Serving zone in sub-folder [%s] under [%s]%s\n", v.Subfolder, prefix, public)
   }
   if t.tls_cert == "" || t.tls_key == "" {
     fmt.Printf("!!! ATTENTION !!! Server is running without encryption. THIS IS VERY INSECURE.\n")
