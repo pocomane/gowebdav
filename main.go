@@ -9,20 +9,22 @@ import (
   "fmt"
   "strings"
   "strconv"
-  "path"
+  "path/filepath"
   "encoding/base64"
   "net"
   "net/http"
   "net/http/httputil"
   "golang.org/x/net/webdav"
+  "io"
   "io/fs"
   "os"
+  "os/exec"
   "time"
   "runtime"
 )
 
 const (
-  APP_TAG = "GoWebDAV-v0.2-rc"
+  APP_TAG = "GoWebDAV-v0.3-rc"
 
   ERROR   = 0
   WARNING = 1
@@ -44,21 +46,26 @@ const (
   ENV_HEAD_ZONE   = GDW_ENV_PREFIX + "ZONE_HEAD_"
   ENV_FOLDER_ZONE = GDW_ENV_PREFIX + "ZONE_FOLDER_"
   ENV_PREFIX_ZONE = GDW_ENV_PREFIX + "ZONE_PREFIX_"
-  ENV_MODE_ZONE   = GDW_ENV_PREFIX + "ZONE_MODE_"
+  ENV_AUTH_ZONE   = GDW_ENV_PREFIX + "ZONE_AUTH_"
+  ENV_CGI_ZONE    = GDW_ENV_PREFIX + "ZONE_CGI_"
 
-  ENV_CGI_ZONE = GDW_ENV_PREFIX + "ZONE_CGI_"
-
-  MODE_DEFAULT   = "basicauth"
-  MODE_DIRECT    = "direct"
-  MODE_BASICAUTH = "basicauth"
+  AUTH_DEFAULT   = "basicauth"
+  AUTH_DIRECT    = "direct"
+  AUTH_BASICAUTH = "basicauth"
 
   AUTH_HEADER_DEFAULT = "Authorization"
 )
 
+const(
+  INVALID_ZONE = iota
+  WEBDAV_ZONE
+)
+
 type Zone struct {
+  Type      int
   Webdav    *webdav.Handler
   Subfolder string
-  Cgi       bool
+  Cgi       map[string]bool
 }
 
 type app struct {
@@ -66,6 +73,7 @@ type app struct {
   host         string
   port         string
   verbosity    uint16
+  serve_path   string
   zone_header  string
   clean_dest   bool
   tls_cert     string
@@ -164,12 +172,13 @@ func (t*app) Bind() (net.Listener, error) {
   return ln, nil
 }
 
-func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
+func (t*app) SelectZone(r *http.Request) Zone {
   zone_header := r.Header.Get(t.zone_header)
   var handler *webdav.Handler
   sub_folder := t.zone[zone_header].Subfolder
   t.log(logOpt{level: DEBUG}, "serving zone in sub-folder", "'" + sub_folder + "'")
-  handler = t.zone[zone_header].Webdav
+  zone := t.zone[zone_header]
+  handler = zone.Webdav
   rd := ""
   if t.shouldLog(logOpt{level: DEBUG}) {
     rdb, _ := httputil.DumpRequest(r, true)
@@ -177,6 +186,7 @@ func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
   }
   t.log(logOpt{level: DEBUG}, "got WebDav request:", rd)
   if handler == nil {
+    zone.Type = INVALID_ZONE
     t.log(logOpt{level: DEBUG}, "can not find zone for the request")
   } else {
     if strings.HasPrefix(r.URL.Path, handler.Prefix) {
@@ -187,10 +197,10 @@ func (t*app) SelectZoneHandler(r *http.Request) *webdav.Handler{
       // the selected prefix. We override this behaviour to return 401
       // Unauthorized. This is needed to mix Public and Private zones on the
       // same server, using different prefixes.
-      handler = nil
+      zone.Type = INVALID_ZONE
     }
   }
-  return handler
+  return zone
 }
 
 func (t*app) ConnectionString() string {
@@ -206,21 +216,29 @@ type nothingWriter struct{ http.ResponseWriter }
 
 func (t nothingWriter) Write(data []byte) (int, error) { return 0, nil }
 
-func (t*app) WebDAVHandler(w http.ResponseWriter, r *http.Request) {
-
-  handler := t.SelectZoneHandler(r)
-  if handler == nil {
-    t.log(logOpt{level: DEBUG}, "returning 401 Unauthorized", r.URL.Path)
-
-    // NOTE: this is done also for zone without MODE_BASICAUTH since also the
-    // provided zone key may be compatible with the Basic Auth scheme
-    w.Header().Set("WWW-Authenticate", `Basic realm="AUTH-REALM"`)
-
-    w.WriteHeader(http.StatusUnauthorized)
-    fmt.Fprintf(w, "401 Unauthorized")
+func (t *app) CgiHandler(folder string, cgi string, w http.ResponseWriter, r *http.Request) {
+  cmd_path := filepath.Join(t.serve_path, folder, cgi)
+  cmd := exec.Command(cmd_path)
+  piperead, pipewrite := io.Pipe()
+  cmd.Stdin = piperead
+  cmd.Stdout = w
+  t.log(logOpt{level: DEBUG}, "running "+cmd_path)
+  cmd.Stderr = os.Stderr
+  err := cmd.Start()
+  if err != nil {
+    t.log(logOpt{level: ERROR}, err)
     return
   }
+  r.Write(pipewrite)
+  pipewrite.Close()
+  err = cmd.Wait()
+  if err != nil {
+    t.log(logOpt{level: ERROR}, err)
+    return
+  }
+}
 
+func (t*app) WebDAVHandler(handler *webdav.Handler, w http.ResponseWriter, r *http.Request) {
   switch r.Method {
   case "MOVE": fallthrough
   case "COPY":
@@ -260,10 +278,31 @@ func (t*app) WebDAVHandler(w http.ResponseWriter, r *http.Request) {
   handler.ServeHTTP(w, r)
 }
 
-func (t*app) Run(ln net.Listener) error {
+func (t*app) RestHandler(w http.ResponseWriter, r *http.Request) {
+  zone := t.SelectZone(r)
+  if zone.Type == INVALID_ZONE {
+    t.log(logOpt{level: DEBUG}, "returning 401 Unauthorized", r.URL.Path)
+
+    // NOTE: this is done also for zone without AUTH_BASICAUTH since also the
+    // provided zone key may be compatible with the Basic Auth scheme
+    w.Header().Set("WWW-Authenticate", `Basic realm="AUTH-REALM"`)
+
+    w.WriteHeader(http.StatusUnauthorized)
+    fmt.Fprintf(w, "401 Unauthorized")
+    return
+  }
+  url := r.URL.String()
+  if zone.Cgi[url] {
+    t.CgiHandler(zone.Subfolder, url, w, r)
+    return
+  }
+  t.WebDAVHandler(zone.Webdav, w, r)
+}
+
+func (t *app) Run(ln net.Listener) error {
 
   http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-    t.WebDAVHandler(w, r)
+    t.RestHandler(w, r)
   })
   server := &http.Server{}
 
@@ -324,12 +363,11 @@ func (t*subLockSystem) Confirm(now time.Time, name0, name1 string, conditions ..
 
 func (t*app) AddZone(
   zone_name string,
-  serve_path string,
   auth_head string,
   subfolder string,
   urlprefix string,
-  mode string,
-  cgi bool,
+  auth_mode string,
+  cgi_list  []string,
 ) error {
 
   if t.zone == nil {
@@ -349,7 +387,7 @@ func (t*app) AddZone(
     logger = func(req *http.Request, err error) { t.logRequest(req, err) }
   }
 
-  if mode == MODE_BASICAUTH {
+  if auth_mode == AUTH_BASICAUTH {
     if auth_head != "" {
       if !strings.Contains(auth_head, ":") {
         auth_head = auth_head + ":" + auth_head
@@ -358,19 +396,27 @@ func (t*app) AddZone(
     }
   }
 
-  zone := t.zone[auth_head]
-  zone.Subfolder = subfolder
-  zone.Cgi = cgi
-  if zone.Webdav == nil {
-    fullpath := path.Join(serve_path, subfolder)
-    wh := webdav.Handler{}
-    wh.Logger = logger
-    wh.FileSystem = webdav.Dir(fullpath)
-    wh.LockSystem = &subLockSystem{base_lock_system, subfolder}
-    wh.Prefix = urlprefix
-    zone.Webdav = &wh
-    t.log(logOpt{level: DEBUG}, "adding zone at", fullpath, "with prefix", "'"+ urlprefix +"'")
+  fullpath := filepath.Join(t.serve_path, subfolder)
+  webdav_handler := webdav.Handler{
+    Logger:     logger,
+    FileSystem: webdav.Dir(fullpath),
+    LockSystem: &subLockSystem{base_lock_system, subfolder},
+    Prefix:     urlprefix,
   }
+
+  cgi := map[string]bool{}
+  for _, cgipath := range cgi_list {
+    cgi[cgipath] = true
+  }
+
+  t.zone[auth_head] = Zone{
+    Type:      WEBDAV_ZONE,
+    Webdav:    &webdav_handler,
+    Subfolder: subfolder,
+    Cgi:       cgi,
+  }
+  t.log(logOpt{level: DEBUG}, "added zone at", fullpath, "with prefix", "'"+urlprefix+"'")
+
   return nil
 }
 
@@ -396,6 +442,14 @@ func getenv_bool(name string, def bool) (bool, error) {
   return (value == "yes" || value == "true" || value == "1"), nil
 }
 
+func getenv_list(name string, separator string, def string) []string {
+  list := getenv(name, "")
+  if list == "" {
+    return []string{}
+  }
+  return strings.Split(list, separator)
+}
+
 func (t*app) ParseConfig() error {
   verb, err := strconv.Atoi(getenv(ENV_VERBOSITY, "2"))
   if err != nil {
@@ -416,23 +470,17 @@ func (t*app) ParseConfig() error {
   }
 
   t.zone_header = getenv(ENV_ZONE_HEADER, AUTH_HEADER_DEFAULT)
+  t.serve_path = getenv(ENV_PATH, "./")
 
-  serve_path := getenv(ENV_PATH, "./")
-  zone_list := getenv(ENV_ZONE_LIST, "ROOT")
-  for _, zone_name := range strings.Split(zone_list, " ") {
-    is_cgi, err := getenv_bool(ENV_CGI_ZONE+zone_name, false)
-    if err != nil {
-      t.log(logOpt{level: ERROR}, err)
-      return err
-    }
+  zone_list := getenv_list(ENV_ZONE_LIST, " ", "ROOT")
+  for _, zone_name := range zone_list {
     t.AddZone(
       zone_name,
-      serve_path,
       getenv(ENV_HEAD_ZONE + zone_name, ""),
       getenv(ENV_FOLDER_ZONE + zone_name, "."),
       getenv(ENV_PREFIX_ZONE + zone_name, ""),
-      getenv(ENV_MODE_ZONE + zone_name, MODE_BASICAUTH),
-      is_cgi,
+      getenv(ENV_AUTH_ZONE + zone_name, AUTH_BASICAUTH),
+      getenv_list(ENV_CGI_ZONE + zone_name, ",", ""),
     )
   }
 
@@ -477,14 +525,15 @@ func (t*app) ParseConfig() error {
     fmt.Printf("Encription key: %s\n", t.tls_key)
     fmt.Printf("Certificate: %s\n", t.tls_cert)
   }
-  //fmt.Printf("Sub-folder discovery: [%v]\n", serve_mode == MODE_AUTO)
+  //fmt.Printf("Sub-folder discovery: [%v]\n", serve_mode == AUTH_AUTO)
   fmt.Printf("Verbosity level: [%d]\n", t.verbosity)
   fmt.Printf("Serving content at host: [%s]\n", t.host)
   fmt.Printf("Trying configured port: [%s]\n", t.port)
-  fmt.Printf("Serving content in path: [%s]\n", serve_path)
+  fmt.Printf("Serving content in path: [%s]\n", t.serve_path)
   fmt.Printf("Clean destination in copy request: [%v]\n", clean_dest)
   // TODO : print if the zone header was translated to basic auth ?
-  fmt.Printf("Zone header: [%s]\n", t.zone_header)
+  fmt.Printf("Zone selection header: [%s]\n", t.zone_header)
+  fmt.Printf("End of general configuration section\n")
   for k, v := range t.zone {
     prefix := ""
     zh := v.Webdav
@@ -494,11 +543,15 @@ func (t*app) ParseConfig() error {
     if prefix == "" {
       prefix = "/"
     }
-    public := ""
+    authentication := " with authentication enabled"
     if k == "" {
-      public = " NO AUTHORIZATION NEEDED"
+      authentication = " WITH AUTHENTICATION DISABLED"
     }
-    fmt.Printf("Serving zone in sub-folder [%s] under [%s]%s\n", v.Subfolder, prefix, public)
+    fmt.Printf("Serving files from sub-folder [%s] under the endpoint [%s]%s\n", v.Subfolder, prefix, authentication)
+    for url := range v.Cgi {
+      fmt.Printf("URL [%s] will be searched in sub-folder [%s] and threated as CGI\n", url, v.Subfolder)
+    }
+    fmt.Printf("End of Zone configuration section\n")
   }
   if t.tls_cert == "" || t.tls_key == "" {
     fmt.Printf("!!! ATTENTION !!! Server is running without encryption. THIS IS VERY INSECURE.\n")
@@ -606,11 +659,15 @@ server (default values in square brakets).
   request. If the requested URL does not start with the such prefix a 401
   Unauthorized error is returned.  Each prefix must begin with '/'.
 
- - `+ENV_MODE_ZONE+` [`+MODE_DEFAULT+`] (X must be in `+ENV_ZONE_LIST+`) - When the
-  mode is `+MODE_DIRECT+`, the content of `+ENV_HEAD_ZONE+`X must exactly match
-  the `+AUTH_HEADER_DEFAULT+` header of the request. If the mode is `+MODE_BASICAUTH+`
+ - `+ENV_AUTH_ZONE+`X [`+AUTH_DEFAULT+`] (X must be in `+ENV_ZONE_LIST+`) - When the
+  mode is "`+AUTH_DIRECT+`", the content of `+ENV_HEAD_ZONE+`X must exactly match
+  the `+AUTH_HEADER_DEFAULT+` header of the request. If the mode is "`+AUTH_BASICAUTH+`"
   the value in `+ENV_HEAD_ZONE+`X  is pre-parsed to make it compatible with
   the basic auth scheme
 
-`)}
+- `+ENV_CGI_ZONE+`X [] (X must be in `+ENV_ZONE_LIST+`) - A comma separated list of
+  URLs. Instead of serve them as regular file, it is run in a new process.
+  The request will be passed to its stdin while its stdout will be served.
 
+`)
+}

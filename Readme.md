@@ -36,25 +36,27 @@ Consider the following configuration:
 export GWD_HOST="127.0.0.1"
 export GWD_PORT="8123"
 export GWD_PATH="/opt/webdav"
-export GWD_ZONE_ENABLE_ZONE="USER PUBLIC"
+export GWD_ZONE_ENABLE_ZONE="USER PUBLIC SCRIPT"
+
 export GWD_ZONE_HEAD_USER="anuser:apwd"
 export GWD_ZONE_FOLDER_USER="user"
 export GWD_ZONE_PREFIX_USER="/priv"
-export GWD_ZONE_MODE_USER="basicauth"
+export GWD_ZONE_AUTH_USER="basicauth"
+
 export GWD_ZONE_HEAD_PUBLIC=""
 export GWD_ZONE_FOLDER_PUBLIC="/public"
 export GWD_ZONE_PREFIX_PUBLIC="/pub"
-export GWD_ZONE_MODE_PUBLIC=""
+export GWD_ZONE_CGI_PUBLIC="/pub/cgi.sh"
+
 ./gowebdav
 ~~~
 
 It will launch the server at 127.0.0.1, on port 8123, serving
 
-- `/opt/webdav/public` at `http://127.0.0.1:8123/pub`
-- `/opt/webdav/user` at `http://127.0.0.1:8123/priv`
-
-The `pub` path does not require login, to access `priv` instead the username is
-"anuser" and password is "apwd".
+- `/opt/webdav/public` at `http://127.0.0.1:8123/pub` with no login required
+- `/opt/webdav/user` at `http://127.0.0.1:8123/priv` with username "anuser" and
+  password "apwd"
+- The filese `/opt/webdav/public/cgi.sh` will be threated in in a CGI-like mode
 
 If you put the `testclient.html` client under `/opt/webdav/public` you can
 access the UI at `http://127.0.0.1:8123/pub/testclient.html`. It will
